@@ -6,6 +6,7 @@ from tests.helpers import make_image
 
 
 def convert(client, **params):
+    params.setdefault("fit_mode", "width")  # 本文件的用例按指定宽度验证算法，尺寸方式固定为「按宽度」
     resp = client.post(
         "/api/convert",
         files={"file": ("test.png", make_image(params.pop("transparent", False)), "image/png")},
@@ -57,7 +58,7 @@ def test_convert_transparent_and_outline(client):
 def test_convert_remove_background_and_dither(client):
     data = convert(client, width=40, remove_background=True, dither="floyd_steinberg")
     assert data["grid"][0][0] is None
-    assert data["bead_count"] < 40 * 27
+    assert data["bead_count"] < data["width"] * data["height"]  # 四角的背景已去掉
 
 
 def test_convert_excluded_codes(client):

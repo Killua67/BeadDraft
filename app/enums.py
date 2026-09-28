@@ -12,6 +12,13 @@ class ResampleMode(StrEnum):
     NEAREST = "nearest"  # 最近邻：每格取一个像素，适合本身就是像素画的图片（不会产生混合色）
 
 
+class FitMode(StrEnum):
+    """图纸尺寸的确定方式。"""
+
+    BOARD = "board"  # 适配豆板：主体等比缩放到刚好放进一块 board_size × board_size 的豆板，居中摆放（推荐）
+    WIDTH = "width"  # 按宽度：按指定的宽度（格数）缩放，高度按比例或手动指定，适合跨多块板的大图
+
+
 class DitherMode(StrEnum):
     """颜色量化时的抖动方式。"""
 

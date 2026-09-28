@@ -10,7 +10,7 @@
 
   /** 与后端 ConvertParams 默认值保持一致 */
   const DEFAULT_PARAMS = {
-    palette_id: 'mard', width: 52, height: null, max_colors: 24,
+    palette_id: 'mard', fit_mode: 'board', board_size: 29, width: 52, height: null, crop_to_subject: true, max_colors: 24,
     resample: 'box', dither: 'none', dither_strength: 0.6,
     remove_background: false, bg_method: 'color', bg_model: 'isnet-general-use', bg_tolerance: 12, clean_isolated: true,
     outline: false, outline_code: null,
@@ -35,7 +35,6 @@
     paintCode: null,           // 画笔颜色
     highlight: null,           // 高亮的色号
     undo: [], redo: [], stroke: null,
-    boardSize: 29,
     convertCtrl: null,         // 进行中的转换请求（新请求会取消旧请求）
     models: new Map(),         // AI 抠图模型 ID -> 状态（见后端 SegModelStatus）
   };
@@ -143,6 +142,13 @@
 
   function updateOutputs() {
     $('#widthOut').textContent = $('#widthRange').value;
+    const board = state.params.board_size;
+    const byBoard = state.params.fit_mode === 'board';
+    $$('#fitModeSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.fit === state.params.fit_mode));
+    $('#widthFields').hidden = byBoard;
+    $('#fitHint').textContent = byBoard
+      ? `主体等比缩放后居中放在一块 ${board}×${board} 豆板上`
+      : '按宽度生成，图纸上的红线为分板线';
     $('#maxColorsOut').textContent = Number($('#maxColorsRange').value) === 0 ? '不限' : $('#maxColorsRange').value;
     $('#saturationOut').textContent = Number($('#saturationRange').value).toFixed(2);
     $('#contrastOut').textContent = Number($('#contrastRange').value).toFixed(2);
@@ -166,6 +172,11 @@
       if (el.type === 'checkbox') el.checked = Boolean(value);
       else el.value = value ?? '';
     }
+    const presetBoard = ['29', '52', '14'].includes(String(state.params.board_size));
+    $('#boardSelect').value = presetBoard ? String(state.params.board_size) : 'custom';
+    $('#boardCustom').hidden = presetBoard;
+    $('#boardCustom').value = state.params.board_size;
+    canvas.boardSize = state.params.board_size;
     $('#customHeight').checked = state.params.height != null;
     $('#heightInput').disabled = state.params.height == null;
     if (state.params.height != null) $('#heightInput').value = state.params.height;
@@ -194,12 +205,34 @@
     scheduleConvert(0);
   });
 
-  $('#boardSelect').addEventListener('change', (e) => {
-    state.boardSize = Number(e.target.value);
-    canvas.boardSize = state.boardSize;
-    canvas.render();
-    updateStats();
+  $('#fitModeSwitch').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-fit]');
+    if (!btn || btn.dataset.fit === state.params.fit_mode) return;
+    state.params.fit_mode = btn.dataset.fit;
+    updateOutputs();
+    scheduleConvert(0);
   });
+
+  $('#boardSelect').addEventListener('change', (e) => {
+    const custom = e.target.value === 'custom';
+    $('#boardCustom').hidden = !custom;
+    if (custom) $('#boardCustom').focus();
+    setBoardSize(custom ? $('#boardCustom').value : e.target.value);
+  });
+  $('#boardCustom').addEventListener('change', (e) => setBoardSize(e.target.value));
+
+  /** 修改豆板边长：影响分板线、统计、导出；适配豆板模式下还要重新生成 */
+  function setBoardSize(value) {
+    const size = clampInt(value, 5, 200);
+    $('#boardCustom').value = size;
+    if (size === state.params.board_size) return;
+    state.params.board_size = size;
+    canvas.boardSize = size;
+    canvas.render();
+    updateOutputs();
+    updateStats();
+    if (state.params.fit_mode === 'board') scheduleConvert(0);
+  }
   $('#pitchInput').addEventListener('change', updateStats);
 
   // ============================================================ 图片上传
@@ -411,7 +444,8 @@
     const rows = state.grid.length;
     const cols = state.grid[0].length;
     const beads = bom.reduce((sum, item) => sum + item.count, 0);
-    const boards = Math.ceil(cols / state.boardSize) * Math.ceil(rows / state.boardSize);
+    const board = state.params.board_size;
+    const boards = Math.ceil(cols / board) * Math.ceil(rows / board);
     const pitch = Number($('#pitchInput').value) || state.palette.bead_size_mm;
     $('#statSize').textContent = `${cols}×${rows}`;
     $('#statBeads').textContent = beads.toLocaleString();
@@ -640,14 +674,14 @@
     btn.textContent = '导出中…';
     try {
       if (state.patternId && !state.dirty) {
-        await Api.exportSaved(state.patternId, format, state.boardSize, pitch);
+        await Api.exportSaved(state.patternId, format, state.params.board_size, pitch);
       } else {
         await Api.exportGrid({
           name: $('#patternName').value.trim() || '拼豆图纸',
           palette_id: state.palette.id,
           grid: state.grid,
           format,
-          board_size: state.boardSize,
+          board_size: state.params.board_size,
           pitch_mm: pitch,
         });
       }

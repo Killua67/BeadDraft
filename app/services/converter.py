@@ -2,13 +2,15 @@
 核心算法：图片 -> 拼豆网格。
 
 处理流程（convert_image）：
-  1. 读取图片（按 EXIF 自动旋转），缩小为「工作图」（每格约 4 像素）
-  2. 可选去背景：颜色识别或 AI 抠图，得到工作图上的前景蒙版（见 background.py / segmentation.py）
-  3. 调整饱和度 / 对比度 / 亮度，按前景覆盖率缩放到网格：覆盖 ≥50% 的格子放豆，
-     格子颜色只取主体像素（排除半透明边缘），避免主体外圈混入背景色
-  4. 颜色量化：Lab + CIEDE2000 找色卡中的最近色，再贪心合并到不超过 max_colors 种
-  5. 可选 Floyd–Steinberg 抖动
-  6. 可选清理孤立杂点、给主体加描边
+  1. 读取图片（按 EXIF 自动旋转）
+  2. 主体蒙版：去背景（颜色识别 / AI 抠图，见 background.py / segmentation.py）或图片自带的透明度
+  3. 裁掉主体四周的空白，计算尺寸：
+     - 适配豆板：主体等比缩放到刚好放进一块板，最后居中摆放（开描边时四周留 1 格）
+     - 按宽度：按指定宽度缩放
+  4. 缩小为「工作图」（每格约 4 像素），调整饱和度 / 对比度 / 亮度，按主体覆盖率缩放到网格：
+     覆盖 ≥50% 的格子放豆，格子颜色只取主体像素（排除半透明边缘），避免主体外圈混入背景色
+  5. 颜色量化：Lab + CIEDE2000 找色卡中的最近色，再贪心合并到不超过 max_colors 种；可选抖动
+  6. 清理孤立杂点、去背景残留的小碎块，摆到豆板上，可选描边
   7. 输出色号网格与用量清单
 
 算法内部用「色卡下标」的二维数组表示网格（-1 为空位），最后再转换成色号。
@@ -21,12 +23,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
-from PIL import Image, ImageChops, ImageEnhance, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps, UnidentifiedImageError
 
 from app.core.config import settings
 from app.core.errors import BadRequestError
 from app.core.logger import get_logger
-from app.enums import BackgroundMethod, DitherMode, ResampleMode
+from app.enums import BackgroundMethod, DitherMode, FitMode, ResampleMode
 from app.schemas import ConvertParams
 from app.services import background, segmentation
 from app.services.color import delta_e_matrix, srgb_to_lab
@@ -62,11 +64,17 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
     warnings: list[str] = []
 
     base = _load_image(data, params)
-    width, height = _target_size(base, params, warnings)
-    work = _work_image(base, width, height, params.resample)
-    if params.remove_background:
-        work.putalpha(_background_mask(data, base, work, params, warnings))
-    rgb, mask = _resize_to_grid(_enhance(work, params), width, height, params.resample)
+    subject = _subject_mask(data, base, params, warnings)
+    region, subject = _crop_to_subject(base, subject, params)
+    # 有空白区域又要描边时，四周留 1 格给描边，避免被图纸边缘截掉
+    margin = 1 if params.outline and subject is not None else 0
+    (content_w, content_h), (width, height) = _target_size(region, params, margin, warnings)
+
+    work = _work_image(region, content_w, content_h, params.resample)
+    if subject is not None:
+        mask_img = subject if subject.size == work.size else subject.resize(work.size, Image.Resampling.BILINEAR)
+        work.putalpha(ImageChops.darker(mask_img, work.getchannel("A")))
+    rgb, mask = _resize_to_grid(_enhance(work, params), content_w, content_h, params.resample)
     lab = srgb_to_lab(rgb)
 
     candidates = _candidate_indices(palette, params.excluded_codes)
@@ -91,8 +99,10 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
             removed = background.remove_small_islands(idx, EMPTY, min(20, max(3, int(total * 0.003))))
             logger.debug("去除小碎块：%d 格", removed)
 
+        idx = _place_on_canvas(idx, width, height)
+
         if params.outline:
-            if (idx == EMPTY).any():
+            if subject is not None and (idx == EMPTY).any():
                 outline_index = _outline_index(palette, candidates, params.outline_code, warnings)
                 _add_outline(idx, outline_index)
             else:
@@ -134,43 +144,36 @@ def _load_image(data: bytes, params: ConvertParams) -> Image.Image:
     return img
 
 
-def _target_size(img: Image.Image, params: ConvertParams, warnings: list[str]) -> tuple[int, int]:
-    """计算网格尺寸：高度未指定时按原图比例，超出上限时等比缩小。"""
-    width = params.width
-    height = params.height or max(1, round(img.height * width / img.width))
-    limit = settings.max_grid_size
-    if height > limit:
-        width = max(1, round(width * limit / height))
-        height = limit
-        warnings.append(f"按比例计算的高度超过上限 {limit}，已等比缩小为 {width}×{height}")
-    return width, height
-
-
-def _work_image(base: Image.Image, width: int, height: int, resample: ResampleMode) -> Image.Image:
+def _subject_mask(data: bytes, base: Image.Image, params: ConvertParams, warnings: list[str]) -> Image.Image | None:
     """
-    工作图：缩小到每格约 WORK_SCALE 像素。去背景、边缘处理都在这张图上做，
-    既保留了足够的边缘细节，又比原图快得多。像素画（最近邻）模式保持原图不缩放。
+    主体蒙版（L 模式，与 base 同尺寸，255 = 主体）：
+    开启去背景时为去背景结果（并与原有透明度合并）；否则图片带透明区域时为其透明度；都没有返回 None。
     """
-    size = (width * WORK_SCALE, height * WORK_SCALE)
-    if resample == ResampleMode.NEAREST or base.width <= size[0]:
-        return base.copy()
-    return base.resize(size, Image.Resampling.BOX)
+    alpha = base.getchannel("A")
+    if params.remove_background:
+        return ImageChops.darker(_background_mask(data, base, params, warnings), alpha)
+    return alpha if alpha.getextrema()[0] < 255 else None
 
 
-def _background_mask(data: bytes, base: Image.Image, work: Image.Image, params: ConvertParams,
-                     warnings: list[str]) -> Image.Image:
-    """计算工作图的前景蒙版（L，255 = 主体），并与图片原有的透明度合并。"""
+def _background_mask(data: bytes, base: Image.Image, params: ConvertParams, warnings: list[str]) -> Image.Image:
+    """去背景，返回与 base 同尺寸的前景蒙版。"""
     t0 = time.perf_counter()
     if params.bg_method == BackgroundMethod.AI:
-        # AI 在原图上推理（结果按图片内容缓存），再缩放到工作图尺寸
+        # AI 在原图上推理，结果按图片内容缓存，调整其他参数时不会重复推理
         mask = segmentation.predict_mask(base, params.bg_model, hashlib.sha1(data).hexdigest())
-        mask = mask.resize(work.size, Image.Resampling.BILINEAR)
     else:
-        mask = background.color_mask(work, params.bg_tolerance)
-    mask = ImageChops.darker(mask, work.getchannel("A"))
+        # 颜色识别在缩小的分析图上进行（速度快），结果再放大回原图尺寸
+        wanted = params.board_size if params.fit_mode == FitMode.BOARD else max(params.width, params.height or 0)
+        side = min(max(base.size), max(256, min(800, wanted * WORK_SCALE)))
+        scale = side / max(base.size)
+        small = base if scale >= 1 else base.resize(
+            (max(1, round(base.width * scale)), max(1, round(base.height * scale))), Image.Resampling.BOX)
+        mask = background.color_mask(small, params.bg_tolerance)
+        if mask.size != base.size:
+            mask = mask.resize(base.size, Image.Resampling.BILINEAR)
 
-    opaque = np.asarray(work.getchannel("A")) >= 128
-    fg_ratio = (np.asarray(mask) >= 128).sum() / max(1, opaque.sum())
+    opaque = np.asarray(base.getchannel("A")) >= 128
+    fg_ratio = (np.asarray(mask)[opaque] >= 128).sum() / max(1, opaque.sum())
     logger.debug("去背景（%s）：主体占比 %.0f%%，耗时 %dms",
                  params.bg_method, fg_ratio * 100, (time.perf_counter() - t0) * 1000)
     if fg_ratio > 0.98:
@@ -180,6 +183,71 @@ def _background_mask(data: bytes, base: Image.Image, work: Image.Image, params: 
         warnings.append("几乎整张图都被当成了背景" + (
             "，可调小容差" if params.bg_method == BackgroundMethod.COLOR else "，可换一个 AI 模型试试"))
     return mask
+
+
+def _crop_to_subject(base: Image.Image, subject: Image.Image | None, params: ConvertParams):
+    """
+    裁掉主体四周的空白，返回 (图片, 蒙版)。
+    计算包围盒前先做一次开运算，避免背景里零星的噪点把包围盒撑大。
+    """
+    if subject is None or not params.crop_to_subject:
+        return base, subject
+    binary = subject.point(lambda v: 255 if v >= 128 else 0)
+    k = max(3, round(max(base.size) / 200) | 1)  # 奇数核，约为图片边长的 0.5%
+    bbox = binary.filter(ImageFilter.MinFilter(k)).filter(ImageFilter.MaxFilter(k)).getbbox() or binary.getbbox()
+    if bbox is None or bbox == (0, 0, base.width, base.height):
+        return base, subject
+    logger.debug("裁掉主体四周空白：%dx%d -> %dx%d", base.width, base.height, bbox[2] - bbox[0], bbox[3] - bbox[1])
+    return base.crop(bbox), subject.crop(bbox)
+
+
+def _target_size(img: Image.Image, params: ConvertParams, margin: int, warnings: list[str]):
+    """
+    计算尺寸，返回 ((主体宽, 主体高), (图纸宽, 图纸高))，单位为格。
+    - 适配豆板：主体等比缩放到 (board_size - 2×margin) 以内，图纸为整块豆板
+    - 按宽度：图纸宽 = width，主体宽 = width - 2×margin，高度按比例（或手动指定），超出上限时等比缩小
+    """
+    if params.fit_mode == FitMode.BOARD:
+        board = params.board_size
+        avail = max(1, board - 2 * margin)
+        if img.width >= img.height:
+            content = (avail, max(1, round(avail * img.height / img.width)))
+        else:
+            content = (max(1, round(avail * img.width / img.height)), avail)
+        return content, (board, board)
+
+    width = params.width
+    content_w = max(1, width - 2 * margin)
+    height = params.height or max(1, round(img.height * content_w / img.width)) + 2 * margin
+    limit = settings.max_grid_size
+    if height > limit:
+        width = max(1, round(width * limit / height))
+        height = limit
+        content_w = max(1, width - 2 * margin)
+        warnings.append(f"按比例计算的高度超过上限 {limit}，已等比缩小为 {width}×{height}")
+    return (content_w, max(1, height - 2 * margin)), (width, height)
+
+
+def _work_image(img: Image.Image, width: int, height: int, resample: ResampleMode) -> Image.Image:
+    """
+    工作图：缩小到每格约 WORK_SCALE 像素，边缘处理和颜色计算都在这张图上做，
+    既保留了足够的细节，又比原图快得多。像素画（最近邻）模式保持原图不缩放。
+    """
+    size = (width * WORK_SCALE, height * WORK_SCALE)
+    if resample == ResampleMode.NEAREST or img.width <= size[0]:
+        return img.copy()
+    return img.resize(size, Image.Resampling.BOX)
+
+
+def _place_on_canvas(idx: np.ndarray, width: int, height: int) -> np.ndarray:
+    """把主体网格居中摆到 width × height 的图纸上（四周为空位）。"""
+    h, w = idx.shape
+    if (w, h) == (width, height):
+        return idx
+    canvas = np.full((height, width), EMPTY, dtype=idx.dtype)
+    y0, x0 = (height - h) // 2, (width - w) // 2
+    canvas[y0:y0 + h, x0:x0 + w] = idx
+    return canvas
 
 
 def _enhance(img: Image.Image, params: ConvertParams) -> Image.Image:

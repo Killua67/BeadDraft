@@ -9,7 +9,9 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import settings
-from app.enums import BackgroundMethod, DitherMode, ExportFormat, ModelStatus, PaletteSource, ResampleMode, SegModel
+from app.enums import (
+    BackgroundMethod, DitherMode, ExportFormat, FitMode, ModelStatus, PaletteSource, ResampleMode, SegModel,
+)
 
 # 网格类型：grid[行][列] = 色号，None 表示空位
 Grid = list[list[str | None]]
@@ -81,9 +83,18 @@ class ConvertParams(BaseModel):
     """图片转拼豆的参数。"""
 
     palette_id: str = Field("mard", description="使用的色卡 ID")
-    width: int = Field(52, ge=4, le=settings.max_grid_size, description="宽度（格数 = 横向豆子数）")
+    fit_mode: FitMode = Field(
+        FitMode.BOARD, description="尺寸方式：board 适配一块豆板（主体缩放后居中）/ width 按指定宽度",
+    )
+    board_size: int = Field(
+        29, ge=5, le=settings.max_grid_size, description="豆板边长（格），fit_mode=board 时图纸即为 board_size × board_size",
+    )
+    width: int = Field(52, ge=4, le=settings.max_grid_size, description="宽度（格数 = 横向豆子数），仅 fit_mode=width 时生效")
     height: int | None = Field(
-        None, ge=4, le=settings.max_grid_size, description="高度（格数），不填则按原图比例自动计算",
+        None, ge=4, le=settings.max_grid_size, description="高度（格数），不填则按比例自动计算，仅 fit_mode=width 时生效",
+    )
+    crop_to_subject: bool = Field(
+        True, description="是否裁掉主体四周的空白后再缩放（去背景或透明图片时生效），让主体尽量占满图纸",
     )
     max_colors: int = Field(24, ge=0, le=300, description="最多使用的颜色种数，0 表示不限制")
     resample: ResampleMode = Field(ResampleMode.BOX, description="缩放方式：box 区域平均（照片）/ nearest 最近邻（像素画）")

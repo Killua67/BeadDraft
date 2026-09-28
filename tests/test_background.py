@@ -12,6 +12,8 @@ from tests.helpers import make_border_subject_image, make_gradient_bg_image, mak
 
 
 def convert(client, image: bytes, **params):
+    params.setdefault("fit_mode", "width")
+    params.setdefault("crop_to_subject", False)  # 本文件验证去背景本身，不裁剪，便于按原图位置断言
     resp = client.post("/api/convert", files={"file": ("t.png", image, "image/png")},
                        data={"params": json.dumps(params)})
     return resp

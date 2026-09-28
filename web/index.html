@@ -41,20 +41,37 @@
         </div>
       </div>
       <div class="field">
-        <label for="widthRange">宽度 <output id="widthOut">52</output> 格</label>
-        <input type="range" id="widthRange" min="8" max="200" value="52" data-param="width">
-      </div>
-      <div class="field field-check">
-        <label><input type="checkbox" id="customHeight"> 自定义高度</label>
-        <input type="number" id="heightInput" min="4" max="200" value="52" disabled class="input-sm">
+        <label>图纸尺寸</label>
+        <div class="segmented segmented-sm" id="fitModeSwitch" role="tablist" aria-label="图纸尺寸方式">
+          <button type="button" data-fit="board">适配一块豆板</button>
+          <button type="button" data-fit="width">按宽度（多块板）</button>
+        </div>
       </div>
       <div class="field">
         <label for="boardSelect">豆板规格</label>
-        <select id="boardSelect">
-          <option value="29">29 × 29（标准大方板）</option>
-          <option value="52">52 × 52（迷你豆大板）</option>
-          <option value="14">14 × 14（小方板）</option>
-        </select>
+        <div class="row-inline">
+          <select id="boardSelect">
+            <option value="29">29 × 29（标准大方板）</option>
+            <option value="52">52 × 52（迷你豆大板）</option>
+            <option value="14">14 × 14（小方板）</option>
+            <option value="custom">自定义…</option>
+          </select>
+          <input type="number" id="boardCustom" min="5" max="200" value="29" class="input-sm" hidden aria-label="自定义豆板边长">
+        </div>
+        <p class="hint" id="fitHint"></p>
+      </div>
+      <div id="widthFields">
+        <div class="field">
+          <label for="widthRange">宽度 <output id="widthOut">52</output> 格</label>
+          <input type="range" id="widthRange" min="8" max="200" value="52" data-param="width">
+        </div>
+        <div class="field field-check">
+          <label><input type="checkbox" id="customHeight"> 自定义高度</label>
+          <input type="number" id="heightInput" min="4" max="200" value="52" disabled class="input-sm">
+        </div>
+      </div>
+      <div class="field field-check">
+        <label title="去背景或透明底图片时生效"><input type="checkbox" data-param="crop_to_subject" checked> 裁掉主体四周空白</label>
       </div>
     </section>
 
