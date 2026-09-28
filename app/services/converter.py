@@ -10,7 +10,7 @@
   4. 缩小为「工作图」（每格约 4 像素），调整饱和度 / 对比度 / 亮度，按主体覆盖率缩放到网格：
      覆盖 ≥50% 的格子放豆，格子颜色只取主体像素（排除半透明边缘），避免主体外圈混入背景色
   5. 颜色量化：Lab + CIEDE2000 找色卡中的最近色，再贪心合并到不超过 max_colors 种；可选抖动
-  6. 清理孤立杂点、去背景残留的小碎块，摆到豆板上，可选描边
+  6. 合并小色块、去掉去背景残留的小碎块（见 cleanup.py），摆到豆板上，可选描边
   7. 输出色号网格与用量清单
 
 算法内部用「色卡下标」的二维数组表示网格（-1 为空位），最后再转换成色号。
@@ -19,7 +19,6 @@
 import hashlib
 import io
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -30,7 +29,7 @@ from app.core.errors import BadRequestError
 from app.core.logger import get_logger
 from app.enums import BackgroundMethod, DitherMode, FitMode, ResampleMode
 from app.schemas import ConvertParams
-from app.services import background, segmentation
+from app.services import background, cleanup, segmentation
 from app.services.color import delta_e_matrix, srgb_to_lab
 from app.services.grid_utils import build_bom
 from app.services.palette_service import Palette
@@ -40,7 +39,13 @@ logger = get_logger(__name__)
 EMPTY = -1              # 网格中空位（不放豆）的标记
 ALPHA_THRESHOLD = 128   # 缩放后 alpha 低于该值视为透明
 PRE_SHRINK_SIZE = 2048  # 超大图片先缩小到该边长，加快处理速度
+ANCHOR_DARK_L = 22      # 黑色锚点：L* 低于该值的格子视为「黑色」（勾线、眼睛）
+ANCHOR_LIGHT_L = 93     # 白色锚点：L* 高于该值的格子视为「白色」（高光、白底）
+ANCHOR_MIN_SHARE = 0.003  # 黑 / 白格子至少占这个比例（且不少于 3 格）才保护，避免个别噪点占用颜色名额
 WORK_SCALE = 4          # 工作图每格对应的像素数（去背景、边缘处理在工作图上进行）
+DOMINANT_SCALE = 6      # 主导色模式的工作图每格像素数（每格 36 个样本，统计出现最多的颜色更可靠）
+DOMINANT_MIN_SHARE = 0.25  # 出现最多的颜色占比低于该值（纹理杂乱，如照片毛发）时退回平均色
+DARK_LINE_SHARE = 0.2      # 深色线条优先：一格内接近黑色的像素占比达到该值就取黑色，避免细勾线断开
 
 
 @dataclass
@@ -74,7 +79,7 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
     if subject is not None:
         mask_img = subject if subject.size == work.size else subject.resize(work.size, Image.Resampling.BILINEAR)
         work.putalpha(ImageChops.darker(mask_img, work.getchannel("A")))
-    rgb, mask = _resize_to_grid(_enhance(work, params), content_w, content_h, params.resample)
+    rgb, mask = _resize_to_grid(_enhance(work, params), content_w, content_h, params.resample, params.line_priority)
     lab = srgb_to_lab(rgb)
 
     candidates = _candidate_indices(palette, params.excluded_codes)
@@ -89,14 +94,14 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
         else:
             idx = _nearest_grid(lab, mask, palette, selected)
 
-        if params.clean_isolated:
-            idx, changed = _clean_isolated(idx)
-            logger.debug("清理孤立杂点：%d 格", changed)
+        if params.min_region_size > 1:
+            changed = cleanup.merge_small_regions(idx, palette.lab, EMPTY, params.min_region_size)
+            logger.debug("合并小色块（< %d 颗）：%d 格", params.min_region_size, changed)
 
         if params.remove_background:
             # 去背景后残留的小碎块（背景里的噪点），阈值随主体大小变化，最多 20 格
             total = int((idx != EMPTY).sum())
-            removed = background.remove_small_islands(idx, EMPTY, min(20, max(3, int(total * 0.003))))
+            removed = cleanup.remove_small_islands(idx, EMPTY, min(20, max(3, int(total * 0.003))))
             logger.debug("去除小碎块：%d 格", removed)
 
         idx = _place_on_canvas(idx, width, height)
@@ -233,8 +238,15 @@ def _work_image(img: Image.Image, width: int, height: int, resample: ResampleMod
     工作图：缩小到每格约 WORK_SCALE 像素，边缘处理和颜色计算都在这张图上做，
     既保留了足够的细节，又比原图快得多。像素画（最近邻）模式保持原图不缩放。
     """
+    if resample == ResampleMode.NEAREST:
+        return img.copy()
+    if resample == ResampleMode.DOMINANT:
+        # 主导色需要尺寸恰好是格数的整数倍，便于按格切块统计；原图较小时用最近邻放大，不产生混合色
+        size = (width * DOMINANT_SCALE, height * DOMINANT_SCALE)
+        method = Image.Resampling.BOX if img.width >= size[0] else Image.Resampling.NEAREST
+        return img.resize(size, method)
     size = (width * WORK_SCALE, height * WORK_SCALE)
-    if resample == ResampleMode.NEAREST or img.width <= size[0]:
+    if img.width <= size[0]:
         return img.copy()
     return img.resize(size, Image.Resampling.BOX)
 
@@ -263,7 +275,7 @@ def _enhance(img: Image.Image, params: ConvertParams) -> Image.Image:
     return rgb
 
 
-def _resize_to_grid(img: Image.Image, width: int, height: int, resample: ResampleMode):
+def _resize_to_grid(img: Image.Image, width: int, height: int, resample: ResampleMode, line_priority: bool = False):
     """
     缩放到网格尺寸，返回 (rgb, mask)：
     rgb 为 (H, W, 3) uint8；mask 为 (H, W) bool，True 表示该格放豆（主体覆盖率 ≥ 50%）。
@@ -274,6 +286,8 @@ def _resize_to_grid(img: Image.Image, width: int, height: int, resample: Resampl
     if resample == ResampleMode.NEAREST:
         small = np.asarray(img.resize((width, height), Image.Resampling.NEAREST))
         return small[..., :3].copy(), small[..., 3] >= ALPHA_THRESHOLD
+    if resample == ResampleMode.DOMINANT:
+        return _dominant_colors(img, width, height, line_priority)
 
     small = np.asarray(img.resize((width, height), Image.Resampling.BOX))
     rgb, mask = small[..., :3].copy(), small[..., 3] >= ALPHA_THRESHOLD
@@ -285,6 +299,49 @@ def _resize_to_grid(img: Image.Image, width: int, height: int, resample: Resampl
         use = core_small[..., 3] >= 32  # 内芯至少占格子的 1/8，太少时 8 位反预乘误差大，仍用原色
         rgb[use] = core_small[use, :3]
     return rgb, mask
+
+
+def _dominant_colors(img: Image.Image, width: int, height: int, line_priority: bool = False):
+    """
+    主导色取色：把工作图按格切成 s×s 的小块，统计每格内出现最多的颜色（RGB 各取高 5 位分桶），
+    取该颜色的像素平均值作为格子颜色。卡通图里的黑色勾线、色块边界因此不会被平均成灰色 / 混合色。
+    出现最多的颜色占比不足 DOMINANT_MIN_SHARE 时（照片毛发、噪点等杂乱纹理）退回全部像素的平均色。
+    深色线条优先（line_priority，可选）：卡通勾线常常不到半格宽，按多数取色会断成碎段，
+    开启后格内接近黑色的像素达到 DARK_LINE_SHARE 时直接取这些深色像素的平均色。照片不建议开启（暗部会发黑）。
+    返回值与 _resize_to_grid 相同：(rgb, mask)。
+    """
+    arr = np.asarray(img).astype(np.int32)
+    s = arr.shape[0] // height
+    blocks = arr[:height * s, :width * s].reshape(height, s, width, s, 4).transpose(0, 2, 1, 3, 4)
+    blocks = blocks.reshape(height, width, s * s, 4)
+    rgb, valid = blocks[..., :3], blocks[..., 3] >= ALPHA_THRESHOLD
+    mask = valid.mean(axis=-1) >= 0.5  # 主体覆盖率 ≥ 50% 的格子放豆
+
+    key = ((rgb[..., 0] >> 3) << 10) | ((rgb[..., 1] >> 3) << 5) | (rgb[..., 2] >> 3)
+    counts = (key[..., :, None] == key[..., None, :]) & valid[..., None, :]
+    counts = np.where(valid, counts.sum(axis=-1), 0)
+    best = counts.argmax(axis=-1)
+    modal_key = np.take_along_axis(key, best[..., None], axis=-1)
+    share = counts.max(axis=-1) / np.maximum(valid.sum(axis=-1), 1)
+
+    pick = valid & ((key == modal_key) | (share < DOMINANT_MIN_SHARE)[..., None])
+
+    if line_priority:
+        # 用亮度近似判断接近黑色：相对亮度 < 0.035 约等于 L* < 22（与黑色锚点一致）
+        luminance = 0.2126 * _linear(rgb[..., 0]) + 0.7152 * _linear(rgb[..., 1]) + 0.0722 * _linear(rgb[..., 2])
+        dark = valid & (luminance < 0.035)
+        dark_cell = dark.sum(axis=-1) >= DARK_LINE_SHARE * np.maximum(valid.sum(axis=-1), 1)
+        pick = np.where(dark_cell[..., None], dark, pick)
+
+    total = np.maximum(pick.sum(axis=-1, keepdims=True), 1)
+    colors = (rgb * pick[..., None]).sum(axis=-2) / total
+    return np.clip(np.round(colors), 0, 255).astype(np.uint8), mask
+
+
+def _linear(channel: np.ndarray) -> np.ndarray:
+    """sRGB 0~255 转线性亮度 0~1。"""
+    c = channel / 255.0
+    return np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
 
 
 # ---------------------------------------------------------------- 4~5 颜色量化
@@ -308,16 +365,21 @@ def _quantize(pixels_rgb: np.ndarray, palette: Palette, candidates: np.ndarray, 
       3. 先取每个像素的最近色，得到初始颜色集合
       4. 若超过 max_colors：每轮计算「去掉某颜色后，其像素改用次近色带来的平方误差增量」，
          去掉增量最小的颜色。这样面积小但很关键的颜色（如眼睛的黑色）不会被轻易去掉。
+      5. 黑 / 白锚点：图中有一定数量的黑色（勾线、眼睛）或白色（高光）时，对应颜色始终保留。
+         它们在拼豆作品里最显眼，但面积往往很小，单靠误差计算在颜色很少时仍可能被合并掉。
     """
     t0 = time.perf_counter()
     uniq, counts = np.unique(pixels_rgb.reshape(-1, 3), axis=0, return_counts=True)
-    dist = delta_e_matrix(srgb_to_lab(uniq), palette.lab[candidates])
+    uniq_lab = srgb_to_lab(uniq)
+    dist = delta_e_matrix(uniq_lab, palette.lab[candidates])
     weights = counts.astype(np.float64)
 
-    selected = np.unique(dist.argmin(axis=1))  # 候选列下标
+    nearest = dist.argmin(axis=1)
+    selected = np.unique(nearest)  # 候选列下标
     initial = len(selected)
+    protected = _anchor_colors(uniq_lab, weights, nearest, max_colors)
     while max_colors and len(selected) > max_colors:
-        selected = _drop_colors(dist, weights, selected, max_colors)
+        selected = _drop_colors(dist, weights, selected, max_colors, protected)
 
     logger.debug(
         "颜色量化：唯一色 %d，初始 %d 色 -> %d 色，耗时 %dms",
@@ -326,8 +388,22 @@ def _quantize(pixels_rgb: np.ndarray, palette: Palette, candidates: np.ndarray, 
     return candidates[selected]
 
 
-def _drop_colors(dist: np.ndarray, weights: np.ndarray, selected: np.ndarray, max_colors: int) -> np.ndarray:
-    """一轮合并：去掉代价最小的若干颜色。远离目标时一次多去几个以加快速度。"""
+def _anchor_colors(uniq_lab: np.ndarray, weights: np.ndarray, nearest: np.ndarray, max_colors: int) -> set[int]:
+    """找出需要保护的黑 / 白锚点颜色（候选列下标）。颜色名额太少（< 3）时不保护。"""
+    if not max_colors or max_colors < 3:
+        return set()
+    min_weight = max(3.0, weights.sum() * ANCHOR_MIN_SHARE)
+    protected = set()
+    for select in (uniq_lab[:, 0] < ANCHOR_DARK_L, uniq_lab[:, 0] > ANCHOR_LIGHT_L):
+        if weights[select].sum() >= min_weight:
+            # 这些格子最常用的那个色卡颜色就是锚点
+            protected.add(int(np.bincount(nearest[select], weights=weights[select]).argmax()))
+    return protected
+
+
+def _drop_colors(dist: np.ndarray, weights: np.ndarray, selected: np.ndarray, max_colors: int,
+                 protected: set[int] = frozenset()) -> np.ndarray:
+    """一轮合并：去掉代价最小的若干颜色（锚点颜色不参与）。远离目标时一次多去几个以加快速度。"""
     k = len(selected)
     sub = dist[:, selected]
     part = np.argpartition(sub, 1, axis=1)
@@ -346,6 +422,8 @@ def _drop_colors(dist: np.ndarray, weights: np.ndarray, selected: np.ndarray, ma
     for c in np.argsort(cost, kind="stable"):
         if len(drop) >= n_drop:
             break
+        if int(selected[c]) in protected:
+            continue
         if partner[c] in drop or any(partner[d] == c for d in drop):
             continue
         drop.append(int(c))
@@ -388,29 +466,6 @@ def _dither(lab: np.ndarray, mask: np.ndarray, palette: Palette, selected: np.nd
 
 
 # ---------------------------------------------------------------- 6 后处理
-
-def _clean_isolated(idx: np.ndarray) -> tuple[np.ndarray, int]:
-    """
-    清理孤立杂点：某颗豆的 8 邻域内没有同色豆，就改成邻域中最多的颜色。
-    用 8 邻域而不是 4 邻域，是为了保留像素画里的斜线（斜线上的点只在对角方向相连）。
-    """
-    h, w = idx.shape
-    out = idx.copy()
-    changed = 0
-    for y in range(h):
-        for x in range(w):
-            c = idx[y, x]
-            if c == EMPTY:
-                continue
-            block = idx[max(0, y - 1):y + 2, max(0, x - 1):x + 2].ravel().tolist()
-            block.remove(c)  # 去掉自身
-            neighbors = [n for n in block if n != EMPTY]
-            if not neighbors or c in neighbors:
-                continue
-            out[y, x] = Counter(neighbors).most_common(1)[0][0]
-            changed += 1
-    return out, changed
-
 
 def _outline_index(palette: Palette, candidates: np.ndarray, outline_code: str | None, warnings: list[str]) -> int:
     """描边颜色：优先用户指定的色号，否则选可用颜色中最深（L 最小）的。"""

@@ -13,8 +13,6 @@
 这样主体边缘不会混入背景色，也不会留下一圈杂边。
 """
 
-from collections import deque
-
 import numpy as np
 from PIL import Image, ImageFilter
 
@@ -120,39 +118,3 @@ def core_alpha(mask: Image.Image) -> Image.Image:
     边缘像素是主体色与背景色的混合，计算格子颜色时排除它们，避免主体外圈发白 / 发灰。
     """
     return mask.point(lambda v: 255 if v >= 230 else 0).filter(ImageFilter.MinFilter(3))
-
-
-def remove_small_islands(idx: np.ndarray, empty: int, min_size: int) -> int:
-    """
-    去掉网格中小于 min_size 格的孤立碎块（8 邻域连通），最大的一块永远保留。
-    去背景后残留的背景碎片通常就是这种小块。直接修改 idx，返回删除的格子数。
-    """
-    h, w = idx.shape
-    filled = idx != empty
-    seen = np.zeros_like(filled)
-    components: list[list[tuple[int, int]]] = []
-    for sy, sx in zip(*np.nonzero(filled)):
-        if seen[sy, sx]:
-            continue
-        seen[sy, sx] = True
-        cells, queue = [], deque([(sy, sx)])
-        while queue:
-            y, x = queue.popleft()
-            cells.append((y, x))
-            for ny in (y - 1, y, y + 1):
-                for nx in (x - 1, x, x + 1):
-                    if 0 <= ny < h and 0 <= nx < w and filled[ny, nx] and not seen[ny, nx]:
-                        seen[ny, nx] = True
-                        queue.append((ny, nx))
-        components.append(cells)
-
-    if len(components) <= 1:
-        return 0
-    largest = max(len(c) for c in components)
-    removed = 0
-    for cells in components:
-        if len(cells) < min_size and len(cells) < largest:
-            for y, x in cells:
-                idx[y, x] = empty
-            removed += len(cells)
-    return removed

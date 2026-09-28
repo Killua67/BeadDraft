@@ -37,6 +37,7 @@ class PaletteColor(BaseModel):
     code: str = Field(..., min_length=1, max_length=20, description="色号，如 MARD 的 A1、Perler 的 80-19001")
     name: str = Field("", max_length=50, description="颜色名称")
     hex: str = Field(..., pattern=r"^#[0-9A-Fa-f]{6}$", description="颜色值，#RRGGBB")
+    group: str = Field("", max_length=10, description="色系分组（如 MARD 的 A / B / H），可为空")
 
 
 class PaletteSummary(BaseModel):
@@ -82,7 +83,7 @@ class PaletteCreate(BaseModel):
 class ConvertParams(BaseModel):
     """图片转拼豆的参数。"""
 
-    palette_id: str = Field("mard", description="使用的色卡 ID")
+    palette_id: str = Field("mard_221", description="使用的色卡 ID，默认 MARD 221 常用套装")
     fit_mode: FitMode = Field(
         FitMode.BOARD, description="尺寸方式：board 适配一块豆板（主体缩放后居中）/ width 按指定宽度",
     )
@@ -97,7 +98,13 @@ class ConvertParams(BaseModel):
         True, description="是否裁掉主体四周的空白后再缩放（去背景或透明图片时生效），让主体尽量占满图纸",
     )
     max_colors: int = Field(24, ge=0, le=300, description="最多使用的颜色种数，0 表示不限制")
-    resample: ResampleMode = Field(ResampleMode.BOX, description="缩放方式：box 区域平均（照片）/ nearest 最近邻（像素画）")
+    resample: ResampleMode = Field(
+        ResampleMode.DOMINANT,
+        description="取色方式：dominant 主导色（默认，边界清晰）/ box 区域平均（过渡柔和）/ nearest 最近邻（像素画）",
+    )
+    line_priority: bool = Field(
+        False, description="深色线条优先（仅 dominant 取色生效）：细勾线不断开，适合卡通 / 线稿；照片开启会让暗部发黑",
+    )
     dither: DitherMode = Field(DitherMode.NONE, description="抖动方式：none 不抖动（推荐）/ floyd_steinberg 误差扩散")
     dither_strength: float = Field(0.6, ge=0, le=1, description="抖动强度 0~1，仅 floyd_steinberg 时生效")
     remove_background: bool = Field(False, description="是否去除背景")
@@ -106,7 +113,10 @@ class ConvertParams(BaseModel):
     )
     bg_model: SegModel = Field(SegModel.ISNET_GENERAL, description="AI 抠图模型，仅 bg_method=ai 时生效")
     bg_tolerance: float = Field(12, ge=1, le=60, description="颜色识别的容差（ΔE00），越大去得越多，仅 bg_method=color 时生效")
-    clean_isolated: bool = Field(True, description="是否清理孤立杂点（周围 8 格都不同色的单颗豆）")
+    min_region_size: int = Field(
+        3, ge=0, le=20,
+        description="合并小色块：同色相连不足 N 颗的小块并入周围颜色（2 = 只清理单颗孤立豆，0 = 不合并），拼起来更省事",
+    )
     outline: bool = Field(False, description="是否给主体外围加一圈描边（需要图片有透明/背景区域）")
     outline_code: str | None = Field(None, description="描边色号，不填则自动选色卡中最深的颜色")
     saturation: float = Field(1.0, ge=0, le=3, description="饱和度倍数，1 为原图，拼豆通常适当调高更好看")

@@ -60,12 +60,10 @@ class Palette:
 
 @lru_cache(maxsize=1)
 def _builtin_palettes() -> dict[str, Palette]:
-    """读取 app/data/palettes/*.json（只在首次调用时读取，之后走缓存）。"""
+    """读取 app/data/palettes/*.json（只在首次调用时读取，之后走缓存），按 sort_order 排序（国内品牌在前）。"""
     palettes: dict[str, Palette] = {}
-    # 固定展示顺序：MARD 放第一位（国内最常用），其余按文件名
-    files = sorted(settings.palette_dir.glob("*.json"), key=lambda p: (p.stem != "mard", p.stem))
-    for path in files:
-        data = json.loads(path.read_text(encoding="utf-8"))
+    items = [json.loads(p.read_text(encoding="utf-8")) for p in settings.palette_dir.glob("*.json")]
+    for data in sorted(items, key=lambda d: (d.get("sort_order", 999), d["id"])):
         palettes[data["id"]] = Palette(
             id=data["id"], name=data["name"], brand=data["brand"], bead_size_mm=data["bead_size_mm"],
             description=data.get("description", ""), source=PaletteSource.BUILTIN,
@@ -109,7 +107,7 @@ def create_custom_palette(db: Session, payload: PaletteCreate) -> Palette:
         bead_size_mm=payload.bead_size_mm,
         description=payload.description,
         colors_json=json.dumps(
-            [{"code": c.code, "name": c.name or c.code, "hex": c.hex.upper()} for c in payload.colors],
+            [{"code": c.code, "name": c.name or c.code, "hex": c.hex.upper(), "group": c.group} for c in payload.colors],
             ensure_ascii=False,
         ),
     )

@@ -8,8 +8,9 @@ from enum import StrEnum
 class ResampleMode(StrEnum):
     """图片缩放到网格时的采样方式。"""
 
-    BOX = "box"          # 区域平均：每格取对应区域的平均色，适合照片、插画
-    NEAREST = "nearest"  # 最近邻：每格取一个像素，适合本身就是像素画的图片（不会产生混合色）
+    BOX = "box"            # 区域平均：每格取对应区域的平均色，过渡自然，适合照片
+    DOMINANT = "dominant"  # 主导色：每格取出现最多的颜色（纹理杂乱时退回平均色），线条和色块边界不会被平均成灰色，适合卡通、插画、线稿
+    NEAREST = "nearest"    # 最近邻：每格取一个像素，适合本身就是像素画的图片（不会产生混合色）
 
 
 class FitMode(StrEnum):

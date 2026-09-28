@@ -24,9 +24,11 @@ def test_health_and_index(client):
 def test_palettes(client):
     palettes = client.get("/api/palettes").json()
     ids = [p["id"] for p in palettes]
-    assert ids[0] == "mard" and "perler" in ids and "hama" in ids
-    mard = client.get("/api/palettes/mard").json()
-    assert mard["color_count"] == len(mard["colors"]) > 200
+    assert ids[0] == "mard_221"  # 默认色卡排第一
+    assert {"mard", "coco", "manman", "panpan", "mixiaowo", "artkal_c", "perler", "hama"} <= set(ids)
+    mard = client.get("/api/palettes/mard_221").json()
+    assert mard["color_count"] == len(mard["colors"]) == 221
+    assert all(c["group"] for c in mard["colors"])  # 带色系分组
     assert client.get("/api/palettes/not_exist").status_code == 404
 
 
@@ -42,7 +44,7 @@ def test_convert_basic(client):
 def test_convert_keeps_small_dark_detail(client):
     """颜色合并时，面积很小但色差很大的颜色（黑眼睛）应该被保留。"""
     data = convert(client, width=60, max_colors=6)
-    mard = {c["code"]: c for c in client.get("/api/palettes/mard").json()["colors"]}
+    mard = {c["code"]: c for c in client.get(f"/api/palettes/{data['palette_id']}").json()["colors"]}
     darkest = min(int(mard[c["code"]]["hex"][1:3], 16) + int(mard[c["code"]]["hex"][3:5], 16) for c in data["colors"])
     assert darkest < 120
 

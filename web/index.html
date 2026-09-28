@@ -129,15 +129,21 @@
         <label><input type="checkbox" data-param="outline"> 主体描边</label>
         <select id="outlineSelect" class="input-sm" data-param="outline_code"></select>
       </div>
-      <div class="field field-check">
-        <label><input type="checkbox" data-param="clean_isolated" checked> 清理孤立杂点</label>
+      <div class="field">
+        <label for="minRegionRange">合并小色块 <output id="minRegionOut">少于 3 颗</output></label>
+        <input type="range" id="minRegionRange" min="0" max="10" value="3" data-param="min_region_size">
+        <p class="hint">同色相连少于 N 颗的小块并入周围颜色，拼起来更省事；数值越大越干净，细节越少。</p>
       </div>
       <div class="field">
-        <label for="resampleSelect">缩放方式</label>
+        <label for="resampleSelect">取色方式</label>
         <select id="resampleSelect" data-param="resample">
-          <option value="box">区域平均（照片 / 插画）</option>
+          <option value="dominant">主导色（边界清晰，推荐）</option>
+          <option value="box">区域平均（过渡柔和）</option>
           <option value="nearest">最近邻（像素画原图）</option>
         </select>
+      </div>
+      <div class="field field-check sub-field" id="linePriorityField">
+        <label title="细勾线不断开，适合卡通、线稿；照片开启会让暗部发黑"><input type="checkbox" data-param="line_priority"> 深色线条优先（卡通勾线）</label>
       </div>
       <div class="field">
         <label for="ditherSelect">抖动</label>

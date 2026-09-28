@@ -7,7 +7,7 @@ import pytest
 
 from app.enums import SegModel
 from app.services import segmentation
-from app.services.background import remove_small_islands
+from app.services.cleanup import remove_small_islands
 from tests.helpers import make_border_subject_image, make_gradient_bg_image, make_image
 
 
@@ -47,7 +47,7 @@ def test_edge_cells_have_no_background_tint(client):
     yy, xx = np.mgrid[0:200, 0:200]
     img[(xx - 100) ** 2 + (yy - 100) ** 2 < 70 ** 2] = (210, 20, 30)
     from tests.helpers import to_png
-    data = convert(client, to_png(img), width=30, remove_background=True, clean_isolated=False).json()
+    data = convert(client, to_png(img), width=30, remove_background=True, min_region_size=0).json()
     reds = [c for c in data["colors"]]
     assert len(reds) <= 2, reds  # 只有红色（可能相近的两种红），没有粉色过渡
 

@@ -34,14 +34,15 @@ app/
   services/
     color.py              sRGB→Lab、CIEDE2000 色差（已用 Sharma 标准数据验证）
     converter.py          ★ 核心算法：图片 → 拼豆网格
-    background.py         颜色识别去背景、主体内芯、小碎块清理
+    background.py         颜色识别去背景、主体内芯
+    cleanup.py            网格清理：合并小色块、去掉背景残留碎块
     segmentation.py       AI 抠图：模型登记、后台下载（MD5 校验）、ONNX 推理、蒙版缓存
     palette_service.py    色卡加载（内置 JSON + 数据库自定义）
     renderer.py           图纸渲染（PNG / PDF / 缩略图）
     export_service.py     导出格式分发
     pattern_service.py    图纸 CRUD
     grid_utils.py         网格校验、用量统计
-  data/palettes/*.json    内置色卡（由 scripts/import_palettes.py 生成）
+  data/palettes/*.json    内置色卡 13 套（由 scripts/import_palettes.py 生成，sort_order 决定下拉框顺序）
 web/
   index.html              页面结构
   css/app.css             样式
@@ -57,6 +58,7 @@ run.py                    启动入口（统一日志格式）
 ```
 
 运行时数据（不提交 Git）：`data/perler.db`（SQLite）、`logs/app.log`、AI 模型 `~/.u2net/*.onnx`（项目目录之外）。
+注意 `.gitignore` 中写的是 `/data/`、`/logs/`（只忽略根目录），`app/data/palettes/` 是源码的一部分，必须提交。
 
 ## 环境与启动
 

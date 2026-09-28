@@ -10,9 +10,9 @@
 
   /** 与后端 ConvertParams 默认值保持一致 */
   const DEFAULT_PARAMS = {
-    palette_id: 'mard', fit_mode: 'board', board_size: 29, width: 52, height: null, crop_to_subject: true, max_colors: 24,
-    resample: 'box', dither: 'none', dither_strength: 0.6,
-    remove_background: false, bg_method: 'color', bg_model: 'isnet-general-use', bg_tolerance: 12, clean_isolated: true,
+    palette_id: 'mard_221', fit_mode: 'board', board_size: 29, width: 52, height: null, crop_to_subject: true, max_colors: 24,
+    resample: 'dominant', line_priority: false, dither: 'none', dither_strength: 0.6,
+    remove_background: false, bg_method: 'color', bg_model: 'isnet-general-use', bg_tolerance: 12, min_region_size: 3,
     outline: false, outline_code: null,
     saturation: 1, contrast: 1, brightness: 1, excluded_codes: [],
   };
@@ -81,13 +81,15 @@
   async function loadPalettes(selectId) {
     state.palettes = await Api.listPalettes();
     const select = $('#paletteSelect');
-    const groups = { builtin: '内置色卡', custom: '自定义色卡' };
-    select.innerHTML = Object.entries(groups).map(([source, label]) => {
-      const items = state.palettes.filter((p) => p.source === source);
-      if (!items.length) return '';
-      return `<optgroup label="${label}">${items.map((p) =>
-        `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}（${p.color_count} 色 · ${p.bead_size_mm}mm）</option>`).join('')}</optgroup>`;
-    }).join('');
+    // 内置色卡按品牌分组（保持后端给出的顺序），自定义色卡单独一组
+    const groups = new Map();
+    for (const p of state.palettes) {
+      const label = p.source === 'custom' ? '自定义色卡' : p.brand;
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(p);
+    }
+    select.innerHTML = [...groups].map(([label, items]) => `<optgroup label="${escapeHtml(label)}">${items.map((p) =>
+      `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}（${p.color_count} 色 · ${p.bead_size_mm}mm）</option>`).join('')}</optgroup>`).join('');
     const target = selectId && state.palettes.some((p) => p.id === selectId) ? selectId : state.params.palette_id;
     select.value = state.palettes.some((p) => p.id === target) ? target : state.palettes[0].id;
     await usePalette(select.value);
@@ -154,6 +156,8 @@
     $('#contrastOut').textContent = Number($('#contrastRange').value).toFixed(2);
     $('#brightnessOut').textContent = Number($('#brightnessRange').value).toFixed(2);
     $('#bgTolOut').textContent = $('#bgTolRange').value;
+    const minRegion = Number($('#minRegionRange').value);
+    $('#minRegionOut').textContent = minRegion <= 1 ? '关闭' : minRegion === 2 ? '只清理单颗' : `少于 ${minRegion} 颗`;
     $('#ditherOut').textContent = Number($('#ditherRange').value).toFixed(2);
     $('#bgOptions').hidden = !state.params.remove_background;
     $('#bgTolField').hidden = state.params.bg_method !== 'color';
@@ -162,6 +166,7 @@
     $$('#bgMethodSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.method === state.params.bg_method));
     updateModelStatus();
     $('#ditherStrengthField').hidden = state.params.dither === 'none';
+    $('#linePriorityField').hidden = state.params.resample !== 'dominant';
     $('#outlineSelect').disabled = !state.params.outline;
   }
 
@@ -867,7 +872,7 @@
     try {
       await Api.deletePalette(id);
       state.paletteCache.delete(id);
-      await loadPalettes(state.palette.id === id ? 'mard' : state.palette.id);
+      await loadPalettes(state.palette.id === id ? DEFAULT_PARAMS.palette_id : state.palette.id);
       renderCustomPalettes();
       toast('已删除色卡');
     } catch (err) { toast(err.message, 'error'); }
