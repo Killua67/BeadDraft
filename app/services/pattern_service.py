@@ -92,6 +92,8 @@ def update_pattern(db: Session, pattern_id: int, payload: PatternUpdate) -> Patt
         pattern.width, pattern.height = len(payload.grid[0]), len(payload.grid)
         pattern.bead_count = bead_count(payload.grid)
         pattern.color_count = len(build_bom(payload.grid, palette))
+    if payload.params is not None:
+        pattern.params_json = payload.params.model_dump_json()
     if payload.grid is not None or payload.done_codes is not None:
         # 进度只保留格式正确、且色号仍在当前网格中的条目（改图后删掉的颜色不再算作「已完成」）
         done = payload.done_codes if payload.done_codes is not None else json.loads(pattern.done_codes_json or "[]")
@@ -99,8 +101,8 @@ def update_pattern(db: Session, pattern_id: int, payload: PatternUpdate) -> Patt
     db.commit()
     db.refresh(pattern)
     done_colors, progress = progress_stats(json.loads(pattern.grid_json), json.loads(pattern.done_codes_json))
-    logger.info("更新图纸 #%d「%s」：进度 %d/%d 色，%.0f%%", pattern.id, pattern.name,
-                done_colors, pattern.color_count, progress * 100)
+    logger.info("更新图纸 #%d「%s」：进度 %d/%d 色，%.0f%%，豆板 %s", pattern.id, pattern.name,
+                done_colors, pattern.color_count, progress * 100, json.loads(pattern.params_json).get("board_size", "-"))
     return pattern
 
 

@@ -80,3 +80,20 @@ def test_board_progress_api(client):
     assert updated["done_codes"] == ["2/1:A1", "2/1:B3"]
     assert updated["done_color_count"] == 1 and updated["progress"] == round(4 / 8, 4)
     client.delete(f"/api/patterns/{pid}")
+
+
+def test_update_params_keeps_board_size(client):
+    """保存时更新生成参数：重新打开图纸能恢复豆板规格。"""
+    grid = [["A1", "H7"], ["H7", "A1"]]
+    created = client.post("/api/patterns", json={
+        "name": "参数同步", "palette_id": "mard_221", "grid": grid, "params": {"board_size": 29, "max_colors": 24},
+    }).json()
+    assert created["params"]["board_size"] == 29
+
+    updated = client.put(f"/api/patterns/{created['id']}", json={"params": {"board_size": 52, "max_colors": 20}}).json()
+    assert updated["params"]["board_size"] == 52 and updated["params"]["max_colors"] == 20
+    assert updated["grid"] == grid  # 只改参数，网格不变
+
+    bad = client.put(f"/api/patterns/{created['id']}", json={"params": {"board_size": 1}})
+    assert bad.status_code == 422
+    client.delete(f"/api/patterns/{created['id']}")

@@ -171,6 +171,9 @@ class PatternUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=100, description="图纸名称")
     grid: Grid | None = Field(None, description="网格数据（手动编辑后的结果）")
+    params: ConvertParams | None = Field(
+        None, description="生成参数（含豆板规格 board_size），下次打开图纸时用来恢复参数和分板",
+    )
     done_codes: list[str] | None = Field(None, description="拼豆进度条目（施工模式使用）：「色号」表示整张图纸该颜色已拼完；「板边长/板号:色号」表示按该边长分板时某块豆板上该颜色已拼完（板号从 1 开始，按行从左到右），如 A1、29/2:B3")
 
     @field_validator("grid")

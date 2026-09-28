@@ -30,6 +30,7 @@
     file: null,                // 上传的图片 File
     image: null,               // 上传的图片 HTMLImageElement（原图视图用）
     params: { ...DEFAULT_PARAMS },
+    gridParams: null,          // 生成当前网格所用的参数（保存时存这份，而不是表单上还没应用的参数）
     grid: null,                // 当前网格 grid[行][列] = 色号 | null
     warnings: [],
     patternId: null,           // 已保存图纸 ID，未保存为 null
@@ -246,6 +247,7 @@
     updateOutputs();
     updateStats();
     if (state.build.active) { renderBoardOptions(); setBuildBoard(0); }
+    persistBoardSize();
     if (state.params.fit_mode === 'board') scheduleConvert(0);
   }
   $('#pitchInput').addEventListener('change', updateStats);
@@ -334,7 +336,9 @@
     state.convertCtrl = ctrl;
     $('#loading').hidden = false;
     try {
-      const result = await Api.convert(state.file, state.params, ctrl.signal);
+      const params = { ...state.params, excluded_codes: [...state.params.excluded_codes] };
+      const result = await Api.convert(state.file, params, ctrl.signal);
+      state.gridParams = params;
       state.warnings = result.warnings;
       $('#regenBar').hidden = true;
       state.undo = [];
@@ -1020,13 +1024,15 @@
     try {
       let detail;
       if (state.patternId && !asNew) {
-        detail = await Api.updatePattern(state.patternId, { name, grid: state.grid, done_codes: [...state.done] });
+        detail = await Api.updatePattern(state.patternId, {
+          name, grid: state.grid, params: savedParams(), done_codes: [...state.done],
+        });
       } else {
         detail = await Api.createPattern({
           name,
           palette_id: state.palette.id,
           grid: state.grid,
-          params: state.file ? state.params : null,
+          params: savedParams(),
           source_filename: state.file?.name || null,
         });
         if (state.done.size) detail = await Api.updatePattern(detail.id, { done_codes: [...state.done] });
@@ -1041,6 +1047,26 @@
   }
   $('#saveBtn').addEventListener('click', () => save(false));
   $('#saveAsBtn').addEventListener('click', () => save(true));
+
+  /** 保存到后端的参数：生成当前网格所用的参数 + 当前豆板规格（豆板规格可以在生成后单独调整） */
+  function savedParams() {
+    const base = state.gridParams || state.params;
+    return { ...base, board_size: state.params.board_size };
+  }
+
+  /** 已保存的图纸单独调整豆板规格时，直接存到后端（不必点保存） */
+  let paramsTimer = 0;
+  function persistBoardSize() {
+    if (!state.patternId) return;
+    clearTimeout(paramsTimer);
+    paramsTimer = setTimeout(async () => {
+      try {
+        await Api.updatePattern(state.patternId, { params: savedParams() });
+      } catch (err) {
+        toast(`豆板规格保存失败：${err.message}`, 'error');
+      }
+    }, 500);
+  }
 
   function confirmDiscard() {
     if (state.dirty && state.patternId) return confirm('当前图纸有未保存的修改，确定放弃吗？');
@@ -1136,6 +1162,7 @@
       const detail = await Api.getPattern(id);
       state.convertCtrl?.abort();
       state.params = { ...DEFAULT_PARAMS, ...detail.params, palette_id: detail.palette_id };
+      state.gridParams = { ...state.params };
       await usePalette(detail.palette_id);
       writeParamsToForm();
       // 历史图纸没有保存原图，清空上传状态
