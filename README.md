@@ -96,13 +96,13 @@ scripts\start.bat
 | GET | `/api/patterns` | 图纸列表 |
 | POST | `/api/patterns` | 保存图纸 |
 | GET / PUT / DELETE | `/api/patterns/{id}` | 图纸详情 / 修改（名称、网格、生成参数 `params`、拼豆进度 `done_codes`）/ 删除 |
-
-拼豆进度条目格式：`A1` 表示整张图纸的 A1 已拼完；`29/2:A1` 表示按 29×29 分板时第 2 块板上的 A1 已拼完
-（板号从 1 开始，按行从左到右）。列表接口返回的 `progress` 为已拼豆子占比。
 | GET | `/api/patterns/{id}/thumbnail.png` | 缩略图 |
 | GET | `/api/patterns/{id}/export` | 导出已保存的图纸 |
 | GET | `/api/bg-models` | AI 抠图模型列表与下载状态 |
 | POST | `/api/bg-models/{id}/download` | 后台下载模型（进度通过 `GET /api/bg-models/{id}` 查询） |
+
+拼豆进度条目格式：`A1` 表示整张图纸的 A1 已拼完；`29/2:A1` 表示按 29×29 分板时第 2 块板上的 A1 已拼完
+（板号从 1 开始，按行从左到右）。列表接口返回的 `progress` 为已拼豆子占比。
 
 示例：
 
