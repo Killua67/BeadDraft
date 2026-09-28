@@ -313,3 +313,20 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
   .build-info { flex: 1; min-width: 0; }
   .build-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* ---------- 色块分组（排除颜色 / 画笔选色） ---------- */
+.swatch-groups { max-height: 55vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px 4px; }
+.swatch-groups .swatch-grid { max-height: none; overflow: visible; }
+.swatch-group + .swatch-group { margin-top: 10px; }
+.swatch-group-head {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+  padding: 6px 2px; background: #fff; border-bottom: 1px solid #F1EFEB; margin-bottom: 6px;
+}
+.swatch-group-head b { font-size: 13px; white-space: nowrap; }
+.swatch-group-head .hint { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swatch-group-head .btn { flex: none; }
+.swatch-group.all-excluded .swatch-group-head b { color: var(--muted); text-decoration: line-through; }
+.dialog-actions-top { align-items: center; flex-wrap: wrap; }
+.group-mode { margin-left: auto; }
+.segmented-xs button { padding: 3px 10px; font-size: 12px; }
+.footer-summary { margin: 0 auto 0 0; align-self: center; }

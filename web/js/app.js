@@ -971,31 +971,145 @@
     }
   }
 
+  // ============================================================ 色块分组（排除颜色 / 画笔选色共用）
+
+  /** 颜色家族（按色值计算），用于「按颜色」分组和给色号系列加上颜色描述 */
+  const HUE_FAMILIES = ['黑白灰', '红', '粉', '橙', '棕', '米肤', '黄', '绿', '青', '蓝', '紫'];
+
+  function hueFamily(hex) {
+    const [r, g, b] = hexToRgb(hex).map((v) => v / 255);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    const d = max - min;
+    const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+    if (s < 0.15 || l < 0.1 || (l > 0.93 && s < 0.6)) return '黑白灰';
+    let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+    if (h < 15 || h >= 335) return l > 0.75 ? '粉' : l < 0.3 ? '棕' : '红';
+    if (h < 45) return l < 0.42 || (s < 0.5 && l < 0.6) ? '棕' : l > 0.8 ? '米肤' : '橙';
+    if (h < 68) return l < 0.35 ? '棕' : l > 0.85 && s < 0.7 ? '米肤' : '黄';
+    if (h < 165) return '绿';
+    if (h < 200) return '青';
+    if (h < 255) return '蓝';
+    if (h < 295) return '紫';
+    return l > 0.65 ? '粉' : '紫';
+  }
+
+  /** 色号系列：色卡数据自带的 group，自定义色卡没有时取色号开头的字母 */
+  function seriesOf(color) {
+    return color.group || (String(color.code).match(/^[A-Za-z]+/) || [''])[0].toUpperCase();
+  }
+
+  /** 自动选择分组方式：色号系列至少 3 组、且最大一组不超过 60% 时按系列，否则按颜色 */
+  function autoGroupMode(colors) {
+    const counts = new Map();
+    for (const c of colors) counts.set(seriesOf(c), (counts.get(seriesOf(c)) || 0) + 1);
+    const largest = Math.max(...counts.values());
+    return counts.size >= 3 && largest / colors.length <= 0.6 ? 'series' : 'hue';
+  }
+
+  /** 把颜色分组，返回 [{ key, label, desc, colors }] */
+  function groupColors(colors, mode) {
+    const groups = new Map();
+    for (const c of colors) {
+      const key = mode === 'series' ? seriesOf(c) : hueFamily(c.hex);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(c);
+    }
+    let entries = [...groups];
+    if (mode === 'hue') entries.sort((a, b) => HUE_FAMILIES.indexOf(a[0]) - HUE_FAMILIES.indexOf(b[0]));
+    return entries.map(([key, items]) => {
+      if (mode === 'hue') return { key, label: key, desc: '', colors: items };
+      const label = !key ? '全部颜色' : /^[A-Za-z]+$/.test(key) ? `${key} 系` : key;
+      if (!/^[A-Za-z]*$/.test(key)) return { key, label, desc: '', colors: items }; // 系列名本身就是颜色名（如盼盼的「黄」）
+      // 字母系列附上主要颜色：占比 ≥ 60% 的颜色家族，否则列出前两种
+      const fam = new Map();
+      for (const c of items) fam.set(hueFamily(c.hex), (fam.get(hueFamily(c.hex)) || 0) + 1);
+      const top = [...fam].sort((a, b) => b[1] - a[1]);
+      const desc = top[0][1] / items.length >= 0.6 ? top[0][0] : top.slice(0, 2).map((t) => t[0]).join(' / ');
+      return { key, label, desc, colors: items };
+    });
+  }
+
+  function swatchHtml(c, extraClass = '') {
+    return `<button type="button" class="swatch ${extraClass}" data-code="${escapeHtml(c.code)}" title="${escapeHtml(colorLabel(c))}">
+        <i style="background:${c.hex}"></i>${escapeHtml(c.code)}
+      </button>`;
+  }
+
   // ============================================================ 排除颜色弹窗
 
   const excludeDialog = $('#excludeDialog');
   let excludeDraft = new Set();
+  let groupMode = 'series';
 
   function renderExcludeGrid() {
     const used = new Set((state.grid || []).flat().filter(Boolean));
-    $('#excludeGrid').innerHTML = state.palette.colors.map((c) => `
-      <button type="button" class="swatch ${excludeDraft.has(c.code) ? 'excluded' : ''} ${used.has(c.code) ? 'used' : ''}"
-        data-code="${escapeHtml(c.code)}" title="${escapeHtml(colorLabel(c))}">
-        <i style="background:${c.hex}"></i>${escapeHtml(c.code)}
-      </button>`).join('');
+    $$('#groupModeSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.groupMode === groupMode));
+    $('#excludeGrid').innerHTML = groupColors(state.palette.colors, groupMode).map((g, i) => `
+      <section class="swatch-group" data-group-index="${i}">
+        <header class="swatch-group-head">
+          <b>${escapeHtml(g.label)}</b>
+          <span class="hint" data-group-meta="${g.colors.length}" data-group-desc="${escapeHtml(g.desc)}"
+            data-group-used="${g.colors.filter((c) => used.has(c.code)).length}"></span>
+          <button type="button" class="btn btn-sm" data-group-toggle="${i}"></button>
+        </header>
+        <div class="swatch-grid">${g.colors.map((c) => swatchHtml(c,
+          `${excludeDraft.has(c.code) ? 'excluded' : ''} ${used.has(c.code) ? 'used' : ''}`)).join('')}</div>
+      </section>`).join('');
+    refreshExcludeSummary();
+  }
+
+  /** 刷新各组标题上的统计、整组按钮文字和底部汇总（不重绘色块，保持滚动位置） */
+  function refreshExcludeSummary() {
+    for (const section of $$('#excludeGrid .swatch-group')) {
+      const codes = [...section.querySelectorAll('.swatch')].map((sw) => sw.dataset.code);
+      const excluded = codes.filter((c) => excludeDraft.has(c)).length;
+      const meta = section.querySelector('[data-group-meta]');
+      const parts = [meta.dataset.groupDesc, `${codes.length} 色`];
+      if (Number(meta.dataset.groupUsed)) parts.push(`图中用到 ${meta.dataset.groupUsed}`);
+      if (excluded) parts.push(`已排除 ${excluded}`);
+      meta.textContent = parts.filter(Boolean).join(' · ');
+      const all = excluded === codes.length;
+      section.classList.toggle('all-excluded', all);
+      section.querySelector('[data-group-toggle]').textContent = all ? '恢复本组' : '排除本组';
+    }
+    const available = state.palette.colors.length - excludeDraft.size;
+    $('#excludeSummary').textContent = `已排除 ${excludeDraft.size} 色 · 可用 ${available} 色`;
+    $('#excludeApply').disabled = available === 0;
   }
 
   $('#excludeBtn').addEventListener('click', () => {
     excludeDraft = new Set(state.params.excluded_codes);
+    groupMode = autoGroupMode(state.palette.colors);
     renderExcludeGrid();
     excludeDialog.showModal();
   });
+  $('#groupModeSwitch').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-group-mode]');
+    if (!btn || btn.dataset.groupMode === groupMode) return;
+    groupMode = btn.dataset.groupMode;
+    renderExcludeGrid();
+  });
   $('#excludeGrid').addEventListener('click', (e) => {
+    const toggle = e.target.closest('[data-group-toggle]');
+    if (toggle) {
+      // 整组切换：组内已全部排除则恢复，否则全部排除
+      const swatches = [...toggle.closest('.swatch-group').querySelectorAll('.swatch')];
+      const exclude = !swatches.every((sw) => excludeDraft.has(sw.dataset.code));
+      for (const sw of swatches) {
+        if (exclude) excludeDraft.add(sw.dataset.code); else excludeDraft.delete(sw.dataset.code);
+        sw.classList.toggle('excluded', exclude);
+      }
+      return refreshExcludeSummary();
+    }
     const sw = e.target.closest('.swatch');
     if (!sw) return;
     const code = sw.dataset.code;
     if (excludeDraft.has(code)) excludeDraft.delete(code); else excludeDraft.add(code);
     sw.classList.toggle('excluded');
+    refreshExcludeSummary();
   });
   $('#excludeNone').addEventListener('click', () => { excludeDraft.clear(); renderExcludeGrid(); });
   $('#excludeUnused').addEventListener('click', () => {
@@ -1022,16 +1136,20 @@
   const paintDialog = $('#paintDialog');
   function openPaintPicker() {
     if (!state.palette) return;
-    $('#paintGrid').innerHTML = state.palette.colors.map((c) => `
-      <button type="button" class="swatch" value="${escapeHtml(c.code)}" title="${escapeHtml(colorLabel(c))}">
-        <i style="background:${c.hex}"></i>${escapeHtml(c.code)}
-      </button>`).join('');
+    if (state.build.active) return toast('施工模式下不能编辑，请先退出', 'error');
+    const excluded = new Set(state.params.excluded_codes);
+    $('#paintGrid').innerHTML = groupColors(state.palette.colors, autoGroupMode(state.palette.colors)).map((g) => `
+      <section class="swatch-group">
+        <header class="swatch-group-head"><b>${escapeHtml(g.label)}</b><span class="hint">${escapeHtml(g.desc)}</span></header>
+        <div class="swatch-grid">${g.colors.map((c) => swatchHtml(c,
+          `${excluded.has(c.code) ? 'excluded' : ''} ${c.code === state.paintCode ? 'used' : ''}`)).join('')}</div>
+      </section>`).join('');
     paintDialog.showModal();
   }
   $('#paintGrid').addEventListener('click', (e) => {
     const sw = e.target.closest('.swatch');
     if (!sw) return;
-    state.paintCode = sw.value;
+    state.paintCode = sw.dataset.code;
     updatePaintChip();
     setTool('brush');
     paintDialog.close();

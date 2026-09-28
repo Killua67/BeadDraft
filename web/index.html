@@ -277,13 +277,18 @@
       <h3>排除颜色</h3>
       <button class="btn btn-ghost btn-sm" value="close" aria-label="关闭">✕</button>
     </header>
-    <p class="hint">点击色块切换。被排除的颜色不会出现在图纸中（例如手上没有的颜色）。</p>
+    <p class="hint">点击色块切换，或整组排除。被排除的颜色不会出现在图纸中（例如手上没有的颜色）。蓝框表示当前图纸用到的颜色。</p>
     <div class="dialog-actions-top">
       <button type="button" class="btn btn-sm" id="excludeNone">全部启用</button>
       <button type="button" class="btn btn-sm" id="excludeUnused">只保留当前图纸用到的</button>
+      <div class="segmented segmented-xs group-mode" id="groupModeSwitch" role="tablist" aria-label="分组方式">
+        <button type="button" data-group-mode="series">按色号系列</button>
+        <button type="button" data-group-mode="hue">按颜色</button>
+      </div>
     </div>
-    <div class="swatch-grid" id="excludeGrid"></div>
+    <div class="swatch-groups" id="excludeGrid"></div>
     <footer class="dialog-footer">
+      <span class="hint footer-summary" id="excludeSummary"></span>
       <button class="btn btn-primary" value="apply" id="excludeApply">应用</button>
     </footer>
   </form>
@@ -296,7 +301,7 @@
       <h3>选择画笔颜色</h3>
       <button class="btn btn-ghost btn-sm" value="close" aria-label="关闭">✕</button>
     </header>
-    <div class="swatch-grid" id="paintGrid"></div>
+    <div class="swatch-groups" id="paintGrid"></div>
   </form>
 </dialog>
 
