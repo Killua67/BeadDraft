@@ -94,7 +94,8 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
         else:
             idx = _nearest_grid(lab, mask, palette, selected)
 
-        if params.min_region_size > 1:
+        dithered = params.dither == DitherMode.FLOYD_STEINBERG and params.dither_strength > 0
+        if params.min_region_size > 1 and not dithered:  # 抖动的散点是有意为之，合并会抵消抖动效果
             changed = cleanup.merge_small_regions(idx, palette.lab, EMPTY, params.min_region_size)
             logger.debug("合并小色块（< %d 颗）：%d 格", params.min_region_size, changed)
 

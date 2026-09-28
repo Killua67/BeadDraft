@@ -178,6 +178,11 @@
         <button type="button" class="tool" id="undoBtn" title="撤销（Ctrl+Z）" disabled>↶</button>
         <button type="button" class="tool" id="redoBtn" title="重做（Ctrl+Shift+Z）" disabled>↷</button>
       </div>
+      <div class="tool-group" aria-label="翻转与旋转">
+        <button type="button" class="tool" data-transform="flipH" title="水平翻转 / 镜像（M）" disabled>⇋</button>
+        <button type="button" class="tool" data-transform="flipV" title="垂直翻转" disabled>⇅</button>
+        <button type="button" class="tool" data-transform="rotCW" title="顺时针旋转 90°（R）" disabled>↻</button>
+      </div>
       <div class="tool-group">
         <label class="toggle"><input type="checkbox" id="gridToggle" checked> 网格</label>
         <label class="toggle"><input type="checkbox" id="boardToggle" checked> 分板线</label>
@@ -199,6 +204,20 @@
         <p class="hint">支持 PNG / JPG / WEBP，透明背景 PNG 效果最好</p>
       </div>
       <div class="loading" id="loading" hidden><span class="spinner"></span>生成中…</div>
+      <div class="build-bar" id="buildBar" hidden>
+        <span class="build-swatch" id="buildSwatch"></span>
+        <div class="build-info">
+          <div class="build-title"><b id="buildCode"></b><span id="buildName"></span><span class="build-count" id="buildCount"></span></div>
+          <div class="build-sub" id="buildSub"></div>
+          <div class="progress"><i id="buildProgress"></i></div>
+        </div>
+        <div class="build-actions">
+          <button type="button" class="btn btn-sm" id="buildPrev" title="上一色（←）">‹</button>
+          <button type="button" class="btn btn-sm btn-primary" id="buildDone" title="完成此色（Enter）">✓ 完成此色</button>
+          <button type="button" class="btn btn-sm" id="buildNext" title="下一色（→）">›</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="buildExit" title="退出施工模式（Esc）">退出</button>
+        </div>
+      </div>
       <div class="tooltip" id="tooltip" hidden></div>
     </div>
   </section>
@@ -217,7 +236,10 @@
     </section>
 
     <section class="card card-grow">
-      <h2>用量清单 <span class="hint">点击高亮 / 选作画笔色</span></h2>
+      <div class="card-head">
+        <h2>用量清单 <span class="hint">点击高亮 / 选作画笔色</span></h2>
+        <button type="button" class="btn btn-sm btn-accent" id="buildBtn" disabled title="按颜色逐个拼，记录进度">开始拼豆</button>
+      </div>
       <div class="bom" id="bom"><p class="hint">生成后显示每种颜色需要的颗数</p></div>
     </section>
 

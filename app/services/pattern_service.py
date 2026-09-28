@@ -24,6 +24,7 @@ def to_summary(p: Pattern) -> dict:
         "bead_count": p.bead_count, "color_count": p.color_count, "source_filename": p.source_filename,
         "created_at": p.created_at, "updated_at": p.updated_at,
         "thumbnail_url": f"/api/patterns/{p.id}/thumbnail.png?v={int(p.updated_at.timestamp())}",
+        "done_color_count": len(json.loads(p.done_codes_json or "[]")),
     }
 
 
@@ -31,7 +32,8 @@ def to_detail(db: Session, p: Pattern) -> dict:
     """ORM 对象 -> PatternDetail 字典（含网格和用量清单）。"""
     grid = json.loads(p.grid_json)
     palette = get_palette(db, p.palette_id)
-    return {**to_summary(p), "grid": grid, "colors": build_bom(grid, palette), "params": json.loads(p.params_json)}
+    return {**to_summary(p), "grid": grid, "colors": build_bom(grid, palette), "params": json.loads(p.params_json),
+            "done_codes": json.loads(p.done_codes_json or "[]")}
 
 
 def get_pattern(db: Session, pattern_id: int) -> Pattern:
@@ -81,9 +83,15 @@ def update_pattern(db: Session, pattern_id: int, payload: PatternUpdate) -> Patt
         pattern.width, pattern.height = len(payload.grid[0]), len(payload.grid)
         pattern.bead_count = bead_count(payload.grid)
         pattern.color_count = len(build_bom(payload.grid, palette))
+    if payload.grid is not None or payload.done_codes is not None:
+        # 进度只保留当前网格里还存在的色号（改图后删掉的颜色不再算作「已完成」）
+        present = {code for row in json.loads(pattern.grid_json) for code in row if code is not None}
+        done = payload.done_codes if payload.done_codes is not None else json.loads(pattern.done_codes_json or "[]")
+        pattern.done_codes_json = json.dumps([c for c in dict.fromkeys(done) if c in present], ensure_ascii=False)
     db.commit()
     db.refresh(pattern)
-    logger.info("更新图纸 #%d「%s」", pattern.id, pattern.name)
+    logger.info("更新图纸 #%d「%s」：进度 %d/%d 色", pattern.id, pattern.name,
+                len(json.loads(pattern.done_codes_json)), pattern.color_count)
     return pattern
 
 

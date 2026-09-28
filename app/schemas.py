@@ -115,7 +115,8 @@ class ConvertParams(BaseModel):
     bg_tolerance: float = Field(12, ge=1, le=60, description="颜色识别的容差（ΔE00），越大去得越多，仅 bg_method=color 时生效")
     min_region_size: int = Field(
         3, ge=0, le=20,
-        description="合并小色块：同色相连不足 N 颗的小块并入周围颜色（2 = 只清理单颗孤立豆，0 = 不合并），拼起来更省事",
+        description="合并小色块：同色相连不足 N 颗的小块并入周围颜色（2 = 只清理单颗孤立豆，0 = 不合并），拼起来更省事；"
+                    "开启抖动时不生效（抖动本身就是用散点模拟过渡色，合并会抵消抖动效果）",
     )
     outline: bool = Field(False, description="是否给主体外围加一圈描边（需要图片有透明/背景区域）")
     outline_code: str | None = Field(None, description="描边色号，不填则自动选色卡中最深的颜色")
@@ -170,6 +171,7 @@ class PatternUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=100, description="图纸名称")
     grid: Grid | None = Field(None, description="网格数据（手动编辑后的结果）")
+    done_codes: list[str] | None = Field(None, description="拼豆进度：已拼完的色号列表（施工模式使用）")
 
     @field_validator("grid")
     @classmethod
@@ -193,6 +195,7 @@ class PatternSummary(BaseModel):
     created_at: datetime = Field(..., description="创建时间")
     updated_at: datetime = Field(..., description="最后修改时间")
     thumbnail_url: str = Field("", description="缩略图地址")
+    done_color_count: int = Field(0, description="拼豆进度：已拼完的颜色数")
 
 
 class PatternDetail(PatternSummary):
@@ -200,6 +203,7 @@ class PatternDetail(PatternSummary):
 
     grid: Grid = Field(..., description="网格数据")
     colors: list[BomItem] = Field(..., description="用量清单")
+    done_codes: list[str] = Field(default_factory=list, description="拼豆进度：已拼完的色号列表")
     params: dict = Field(default_factory=dict, description="生成参数")
 
 

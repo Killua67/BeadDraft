@@ -105,6 +105,13 @@ uv run pytest                # 运行测试
 - 可选模型：`isnet-general-use` 通用（170MB，默认）、`u2net_human_seg` 人像（168MB）、`isnet-anime` 动漫（168MB）、`u2netp` 轻量（4.4MB）。
 - 本机已下载：`isnet-general-use`（2026-09-28）。
 
+## 数据库变更
+
+- 新增字段：在 `models.py` 中定义（必须写 `comment`，枚举类字段注明可能取值），同时在
+  `app/core/database.py` 的 `ADDED_COLUMNS` 中登记，启动时会自动 `ALTER TABLE` 给旧数据库补上（SQLite 的 `create_all` 不会修改已有表）。
+- 新增字段必须有默认值（`DEFAULT ...`），保证旧数据可用；`tests/test_progress.py` 中有迁移测试可参考。
+- 已登记的迁移：`patterns.done_codes_json`（拼豆进度，2026-09-28）。
+
 ## 编码约定
 
 - Python：遵循 PEP 8，行宽 120；类型注解使用 3.12 语法（`list[str]`、`X | None`）。

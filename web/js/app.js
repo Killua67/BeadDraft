@@ -3,6 +3,8 @@
  *
  * 数据流：上传图片 / 修改参数 → convert() 调后端 → applyGrid() 更新 state.grid → 画布与右侧面板刷新。
  * 手动编辑直接修改 state.grid（按「笔画」记录撤销栈），保存时把整个网格提交给后端。
+ * 翻转 / 旋转记录在 state.orientation 中，重新生成后自动套用，方向不会丢。
+ * 施工模式（state.build）按颜色逐个拼，已完成的色号记在 state.done，保存后的图纸会把进度存到后端。
  */
 (() => {
   const $ = (sel) => document.querySelector(sel);
@@ -34,7 +36,10 @@
     tool: 'pan',
     paintCode: null,           // 画笔颜色
     highlight: null,           // 高亮的色号
-    undo: [], redo: [], stroke: null,
+    undo: [], redo: [], stroke: null,  // 撤销栈条目：{ type: 'cells', changes } 或 { type: 'transform', op }
+    orientation: { flip: false, rot: 0 },  // 当前方向：先水平翻转（flip），再顺时针旋转 rot × 90°
+    done: new Set(),           // 施工模式：已拼完的色号
+    build: { active: false, order: [], index: 0 },  // 施工模式：颜色顺序（按用量从多到少）与当前位置
     convertCtrl: null,         // 进行中的转换请求（新请求会取消旧请求）
     models: new Map(),         // AI 抠图模型 ID -> 状态（见后端 SegModelStatus）
   };
@@ -157,7 +162,10 @@
     $('#brightnessOut').textContent = Number($('#brightnessRange').value).toFixed(2);
     $('#bgTolOut').textContent = $('#bgTolRange').value;
     const minRegion = Number($('#minRegionRange').value);
-    $('#minRegionOut').textContent = minRegion <= 1 ? '关闭' : minRegion === 2 ? '只清理单颗' : `少于 ${minRegion} 颗`;
+    const dithering = state.params.dither !== 'none';
+    $('#minRegionRange').disabled = dithering;
+    $('#minRegionOut').textContent = dithering ? '抖动时不合并'
+      : minRegion <= 1 ? '关闭' : minRegion === 2 ? '只清理单颗' : `少于 ${minRegion} 颗`;
     $('#ditherOut').textContent = Number($('#ditherRange').value).toFixed(2);
     $('#bgOptions').hidden = !state.params.remove_background;
     $('#bgTolField').hidden = state.params.bg_method !== 'color';
@@ -270,6 +278,9 @@
       state.file = file;
       state.image = img;
       state.patternId = null;
+      state.orientation = { flip: false, rot: 0 };
+      state.done.clear();
+      if (state.build.active) exitBuild();
       canvas.setImage(img);
       const preview = $('#sourcePreview');
       preview.src = url;
@@ -305,7 +316,9 @@
       state.warnings = result.warnings;
       state.undo = [];
       state.redo = [];
-      applyGrid(result.grid, true);
+      state.done.clear();  // 重新生成后颜色分布变了，进度作废
+      if (state.build.active) exitBuild();
+      applyGrid(orientGrid(result.grid, state.orientation), true);
       markDirty(true);
     } catch (err) {
       if (err.name !== 'AbortError') toast(err.message, 'error');
@@ -440,8 +453,9 @@
     renderWarnings();
     const hasGrid = Boolean(state.grid);
     $('#saveBtn').disabled = !hasGrid;
-    $$('[data-export]').forEach((b) => { b.disabled = !hasGrid; });
+    $$('[data-export], [data-transform]').forEach((b) => { b.disabled = !hasGrid; });
     updateUndoButtons();
+    updateBuildButton(bom);
   }
 
   function updateStats(bom = computeBom()) {
@@ -470,8 +484,9 @@
       box.innerHTML = '<p class="hint">没有需要放豆的格子</p>';
       return;
     }
+    const current = state.build.active ? state.build.order[state.build.index] : null;
     box.innerHTML = bom.map((item) => `
-      <button type="button" class="bom-row ${state.highlight === item.code ? 'active' : ''}" data-code="${escapeHtml(item.code)}"
+      <button type="button" class="bom-row ${state.highlight === item.code ? 'active' : ''} ${state.done.has(item.code) ? 'done' : ''} ${current === item.code ? 'current' : ''}" data-code="${escapeHtml(item.code)}"
         title="建议购买 ${Math.ceil(item.count * (1 + SPARE_RATIO))} 颗（含 10% 损耗）">
         <span class="bom-swatch" style="background:${item.hex}"></span>
         <span class="bom-name"><b>${escapeHtml(item.code)}</b>${item.name !== item.code ? `<span>${escapeHtml(item.name)}</span>` : ''}</span>
@@ -483,6 +498,11 @@
     const row = e.target.closest('.bom-row');
     if (!row) return;
     const code = row.dataset.code;
+    if (state.build.active) {
+      state.build.index = Math.max(0, state.build.order.indexOf(code));
+      updateBuild();
+      return;
+    }
     if (state.tool === 'brush') {
       state.paintCode = code;
       updatePaintChip();
@@ -522,7 +542,9 @@
   }
   $('#toolSwitch').addEventListener('click', (e) => {
     const btn = e.target.closest('[data-tool]');
-    if (btn) setTool(btn.dataset.tool);
+    if (!btn) return;
+    if (state.build.active && btn.dataset.tool !== 'pan') return toast('施工模式下不能编辑，请先退出', 'error');
+    setTool(btn.dataset.tool);
   });
   $('#paintChip').addEventListener('click', openPaintPicker);
 
@@ -574,27 +596,35 @@
     const stroke = state.stroke;
     state.stroke = null;
     if (!stroke?.length) return;
-    state.undo.push(stroke);
+    state.undo.push({ type: 'cells', changes: stroke });
     state.redo = [];
     markDirty(true);
     refreshResult();
   }
 
   function undo() {
-    const stroke = state.undo.pop();
-    if (!stroke) return;
-    for (let i = stroke.length - 1; i >= 0; i--) state.grid[stroke[i].r][stroke[i].c] = stroke[i].old;
-    state.redo.push(stroke);
+    const entry = state.undo.pop();
+    if (!entry) return;
+    if (entry.type === 'transform') {
+      applyTransform(INVERSE_TRANSFORM[entry.op], false);
+    } else {
+      for (let i = entry.changes.length - 1; i >= 0; i--) {
+        const { r, c, old } = entry.changes[i];
+        state.grid[r][c] = old;
+      }
+    }
+    state.redo.push(entry);
     markDirty(true);
     canvas.render();
     refreshResult();
   }
 
   function redo() {
-    const stroke = state.redo.pop();
-    if (!stroke) return;
-    for (const step of stroke) state.grid[step.r][step.c] = step.value;
-    state.undo.push(stroke);
+    const entry = state.redo.pop();
+    if (!entry) return;
+    if (entry.type === 'transform') applyTransform(entry.op, false);
+    else for (const { r, c, value } of entry.changes) state.grid[r][c] = value;
+    state.undo.push(entry);
     markDirty(true);
     canvas.render();
     refreshResult();
@@ -611,15 +641,175 @@
     if (e.target.closest('input, textarea, select, dialog[open]')) return;
     const mod = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
+    if (state.build.active && !mod) {
+      const actions = { enter: completeCurrent, ' ': completeCurrent, arrowright: () => stepBuild(1),
+        arrowleft: () => stepBuild(-1), escape: exitBuild };
+      if (actions[key]) { e.preventDefault(); return actions[key](); }
+    }
     if (mod && key === 'z') { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
     if (mod && key === 'y') { e.preventDefault(); return redo(); }
     if (mod) return;
     const tools = { h: 'pan', v: 'pan', b: 'brush', e: 'eraser', i: 'picker' };
-    if (tools[key]) setTool(tools[key]);
+    if (tools[key] && !state.build.active) setTool(tools[key]);
+    else if (key === 'm') applyTransform('flipH');
+    else if (key === 'r') applyTransform('rotCW');
     else if (key === '=' || key === '+') canvas.zoomBy(1.25);
     else if (key === '-') canvas.zoomBy(0.8);
     else if (key === '0') { canvas.fit(); updateZoomLabel(); }
   });
+
+  // ============================================================ 翻转与旋转
+
+  /** 网格变换（都返回新数组，不修改原网格） */
+  const TRANSFORMS = {
+    flipH: (g) => g.map((row) => [...row].reverse()),
+    flipV: (g) => [...g].reverse().map((row) => [...row]),
+    rotCW: (g) => g[0].map((_, c) => g.map((row) => row[c]).reverse()),
+    rotCCW: (g) => g[0].map((_, c) => g.map((row) => row[row.length - 1 - c])),
+  };
+  const INVERSE_TRANSFORM = { flipH: 'flipH', flipV: 'flipV', rotCW: 'rotCCW', rotCCW: 'rotCW' };
+
+  /**
+   * 方向合成：方向记为「先水平翻转 flip，再顺时针旋转 rot 次」。
+   * 利用二面体群关系 翻转∘旋转 = 旋转⁻¹∘翻转、垂直翻转 = 旋转180°∘水平翻转 推导得出。
+   */
+  function composeOrientation({ flip, rot }, op) {
+    if (op === 'rotCW') return { flip, rot: (rot + 1) % 4 };
+    if (op === 'rotCCW') return { flip, rot: (rot + 3) % 4 };
+    if (op === 'flipH') return { flip: !flip, rot: (4 - rot) % 4 };
+    return { flip: !flip, rot: (6 - rot) % 4 }; // flipV
+  }
+
+  /** 把方向套用到新生成的网格上（重新生成后保持用户选择的翻转 / 旋转） */
+  function orientGrid(grid, { flip, rot }) {
+    let g = flip ? TRANSFORMS.flipH(grid) : grid;
+    for (let i = 0; i < rot; i++) g = TRANSFORMS.rotCW(g);
+    return g;
+  }
+
+  function applyTransform(op, record = true) {
+    if (!state.grid) return;
+    state.grid = TRANSFORMS[op](state.grid);
+    state.orientation = composeOrientation(state.orientation, op);
+    if (record) {
+      state.undo.push({ type: 'transform', op });
+      state.redo = [];
+    }
+    canvas.setData(state.grid, state.colorMap, true); // 尺寸变化（非正方形旋转）时会自动适应窗口
+    updateZoomLabel();
+    markDirty(true);
+    refreshResult();
+  }
+  $$('[data-transform]').forEach((btn) => btn.addEventListener('click', () => applyTransform(btn.dataset.transform)));
+
+  // ============================================================ 逐色施工模式
+
+  function updateBuildButton(bom = computeBom()) {
+    const btn = $('#buildBtn');
+    btn.disabled = !state.grid || !bom.length;
+    const done = bom.filter((c) => state.done.has(c.code)).length;
+    btn.textContent = state.build.active ? '退出施工' : done ? `继续拼豆（${done}/${bom.length}）` : '开始拼豆';
+  }
+  $('#buildBtn').addEventListener('click', () => (state.build.active ? exitBuild() : enterBuild()));
+
+  function enterBuild() {
+    const order = computeBom().map((c) => c.code);
+    if (!order.length) return;
+    const firstTodo = order.findIndex((c) => !state.done.has(c));
+    state.build = { active: true, order, index: Math.max(0, firstTodo) };
+    setTool('pan');
+    state.highlight = null;
+    canvas.highlight = null;
+    wrap.classList.add('building');
+    $('#buildBar').hidden = false;
+    updateBuild();
+    canvas.insetTop = $('#buildBar').offsetHeight + 16; // 图纸让出施工栏的位置，不被遮挡
+    canvas.fit();
+    updateZoomLabel();
+  }
+
+  function exitBuild() {
+    state.build.active = false;
+    canvas.build = null;
+    wrap.classList.remove('building');
+    $('#buildBar').hidden = true;
+    canvas.insetTop = 0;
+    canvas.fit();
+    updateZoomLabel();
+    refreshResult();
+  }
+
+  /** 刷新施工栏：当前颜色、第几色、按颗数计算的整体进度 */
+  function updateBuild() {
+    const b = state.build;
+    const bom = computeBom();
+    const code = b.order[b.index];
+    const item = bom.find((c) => c.code === code);
+    if (!item) return exitBuild();
+    const totalBeads = bom.reduce((sum, c) => sum + c.count, 0);
+    const doneItems = bom.filter((c) => state.done.has(c.code));
+    const doneBeads = doneItems.reduce((sum, c) => sum + c.count, 0);
+
+    canvas.build = { current: code, done: state.done };
+    canvas.render();
+    $('#buildSwatch').style.background = item.hex;
+    $('#buildCode').textContent = code;
+    $('#buildName').textContent = item.name !== code ? item.name : '';
+    $('#buildCount').textContent = `${item.count} 颗`;
+    $('#buildSub').textContent = `第 ${b.index + 1}/${b.order.length} 色 · 已完成 ${doneItems.length} 色、${doneBeads}/${totalBeads} 颗`;
+    $('#buildProgress').style.width = `${(doneBeads / totalBeads) * 100}%`;
+    $('#buildDone').textContent = state.done.has(code) ? '↺ 标记未完成' : '✓ 完成此色';
+    renderBom(bom);
+    updateBuildButton(bom);
+  }
+
+  /** 完成（或取消完成）当前颜色，完成后自动跳到下一个未完成的颜色 */
+  function completeCurrent() {
+    const b = state.build;
+    const code = b.order[b.index];
+    if (state.done.has(code)) {
+      state.done.delete(code);
+    } else {
+      state.done.add(code);
+      const later = b.order.findIndex((c, i) => i > b.index && !state.done.has(c));
+      const next = later >= 0 ? later : b.order.findIndex((c) => !state.done.has(c));
+      if (next >= 0) b.index = next;
+      else toast('🎉 全部颜色都拼完了！');
+    }
+    saveProgress();
+    updateBuild();
+  }
+
+  function stepBuild(delta) {
+    const b = state.build;
+    b.index = (b.index + delta + b.order.length) % b.order.length;
+    updateBuild();
+  }
+
+  $('#buildDone').addEventListener('click', completeCurrent);
+  $('#buildPrev').addEventListener('click', () => stepBuild(-1));
+  $('#buildNext').addEventListener('click', () => stepBuild(1));
+  $('#buildExit').addEventListener('click', exitBuild);
+
+  /** 进度保存到后端（已保存的图纸才有 ID），连续点击时合并成一次请求 */
+  let progressTimer = 0;
+  let progressHintShown = false;
+  function saveProgress() {
+    if (!state.patternId) {
+      if (!progressHintShown) toast('保存图纸后，拼豆进度也会一起记住');
+      progressHintShown = true;
+      return;
+    }
+    clearTimeout(progressTimer);
+    progressTimer = setTimeout(async () => {
+      try {
+        await Api.updatePattern(state.patternId, { done_codes: [...state.done] });
+        loadHistory();
+      } catch (err) {
+        toast(`进度保存失败：${err.message}`, 'error');
+      }
+    }, 400);
+  }
 
   // ============================================================ 保存
 
@@ -640,7 +830,7 @@
     try {
       let detail;
       if (state.patternId && !asNew) {
-        detail = await Api.updatePattern(state.patternId, { name, grid: state.grid });
+        detail = await Api.updatePattern(state.patternId, { name, grid: state.grid, done_codes: [...state.done] });
       } else {
         detail = await Api.createPattern({
           name,
@@ -649,6 +839,7 @@
           params: state.file ? state.params : null,
           source_filename: state.file?.name || null,
         });
+        if (state.done.size) detail = await Api.updatePattern(detail.id, { done_codes: [...state.done] });
       }
       state.patternId = detail.id;
       markDirty(false);
@@ -714,7 +905,8 @@
           <img src="${p.thumbnail_url}" alt="" loading="lazy">
           <div class="history-meta">
             <b>${escapeHtml(p.name)}</b>
-            <span>${p.width}×${p.height} · ${p.bead_count} 颗 · ${p.color_count} 色 · ${formatTime(p.updated_at)}</span>
+            <span>${p.width}×${p.height} · ${p.bead_count} 颗 · ${p.color_count} 色${p.done_color_count
+              ? ` · 已拼 ${p.done_color_count}/${p.color_count} 色` : ''} · ${formatTime(p.updated_at)}</span>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" data-delete="${p.id}" title="删除">✕</button>
         </div>`).join('');
@@ -767,6 +959,9 @@
       state.warnings = [];
       state.undo = [];
       state.redo = [];
+      state.orientation = { flip: false, rot: 0 };  // 保存的网格已经是翻转 / 旋转后的结果
+      state.done = new Set(detail.done_codes || []);
+      if (state.build.active) exitBuild();
       $('#patternName').value = detail.name;
       applyGrid(detail.grid);
       markDirty(false);

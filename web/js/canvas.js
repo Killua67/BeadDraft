@@ -6,6 +6,8 @@
  *   chart 图纸（方格 + 色号）
  *   image 原图（对照用）
  *
+ * 施工模式（build 不为空）：当前颜色正常显示并加红圈，已完成的颜色淡显，其余颜色几乎隐藏。
+ *
  * 与业务的交互通过构造参数里的回调完成：onHover / onLeave / onCellDown / onCellEnter / onCellUp。
  */
 class PatternCanvas {
@@ -24,6 +26,8 @@ class PatternCanvas {
     this.showBoards = true;
     this.boardSize = 29;
     this.highlight = null;     // 高亮的色号
+    this.build = null;         // 施工模式：{ current: 当前色号, done: Set<已完成色号> }
+    this.insetTop = 0;         // 顶部被浮层（施工栏）占用的高度，适应窗口时让出这部分
 
     this.scale = 16;           // 每格 CSS 像素
     this.ox = 0;               // 网格左上角相对画布的偏移（CSS 像素）
@@ -73,10 +77,11 @@ class PatternCanvas {
     if (!this.grid) return this.render();
     const { width, height } = this.wrap.getBoundingClientRect();
     const pad = 24;
-    const s = Math.min((width - pad * 2) / this.cols, (height - pad * 2) / this.rows);
+    const top = this.insetTop;
+    const s = Math.min((width - pad * 2) / this.cols, (height - top - pad * 2) / this.rows);
     this.scale = clamp(s, this.minScale, this.maxScale);
     this.ox = (width - this.cols * this.scale) / 2;
-    this.oy = (height - this.rows * this.scale) / 2;
+    this.oy = top + (height - top - this.rows * this.scale) / 2;
     this._fitted = true;
     this.render();
   }
@@ -199,7 +204,7 @@ class PatternCanvas {
         }
         const color = this.colors.get(code);
         if (!color) continue;
-        ctx.globalAlpha = this.highlight && this.highlight !== code ? 0.12 : 1;
+        ctx.globalAlpha = this._alpha(code);
         if (asCircle) {
           ctx.fillStyle = color.fill;
           ctx.beginPath();
@@ -220,6 +225,35 @@ class PatternCanvas {
       }
     }
     ctx.globalAlpha = 1;
+    if (this.build && s >= 5) this._ringCurrent(r0, r1, c0, c1);
+  }
+
+  /** 格子透明度：施工模式 > 高亮 > 正常 */
+  _alpha(code) {
+    if (this.build) {
+      if (code === this.build.current) return 1;
+      return this.build.done.has(code) ? 0.3 : 0.07;
+    }
+    return this.highlight && this.highlight !== code ? 0.12 : 1;
+  }
+
+  /** 施工模式：给当前颜色的格子描红圈，散落的单颗豆也容易找到 */
+  _ringCurrent(r0, r1, c0, c1) {
+    const { ctx } = this;
+    const s = this.scale;
+    ctx.beginPath();
+    ctx.strokeStyle = '#F2545B';
+    ctx.lineWidth = Math.max(1.5, s * 0.09);
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        if (this.grid[r][c] !== this.build.current) continue;
+        const x = this.ox + c * s + s / 2;
+        const y = this.oy + r * s + s / 2;
+        ctx.moveTo(x + s * 0.5, y);
+        ctx.arc(x, y, s * 0.5, 0, Math.PI * 2);
+      }
+    }
+    ctx.stroke();
   }
 
   _drawLines(r0, r1, c0, c1, gw, gh) {

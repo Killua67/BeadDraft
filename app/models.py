@@ -37,6 +37,10 @@ class Pattern(Base):
     bead_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="豆子总颗数（不含空位）")
     color_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="使用的颜色种数")
     source_filename: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="原始图片文件名，可为空")
+    done_codes_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]",
+        comment='拼豆进度：施工模式中已拼完的色号列表 JSON，如 ["A1","H7"]；空列表表示还没开始',
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时间（本地时间）")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now, comment="最后修改时间（本地时间）",
