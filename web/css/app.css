@@ -335,3 +335,17 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 .group-mode { margin-left: auto; }
 .segmented-xs button { padding: 3px 10px; font-size: 12px; }
 .footer-summary { margin: 0 auto 0 0; align-self: center; }
+
+/* ---------- 施工模式：按豆板 ---------- */
+.build-board { max-width: 190px; font-size: 12px; }
+@media (max-width: 760px) { .build-board { max-width: none; flex: 1; } }
+
+/* ---------- 重新生成提示（有手动修改时） ---------- */
+.regen-bar {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 3;
+  display: flex; align-items: center; gap: 8px; width: max-content; max-width: calc(100% - 24px);
+  padding: 8px 10px 8px 14px; border-radius: 10px; font-size: 13px;
+  background: var(--warn-bg); color: var(--warn-text); border: 1px solid #F0D9A6; box-shadow: 0 6px 20px rgba(0,0,0,.12);
+}
+.regen-bar span { flex: 1; }
+@media (max-width: 760px) { .regen-bar { flex-wrap: wrap; } }

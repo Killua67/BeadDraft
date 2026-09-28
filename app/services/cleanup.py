@@ -13,6 +13,12 @@ import numpy as np
 
 from app.services.color import delta_e_2000
 
+# 高光保护：接近黑 / 白的小色块，如果与要并入的颜色差别很大（如黑眼睛里的白色高光、白眼睛里的黑瞳孔），
+# 说明是有意画上去的细节，不合并
+HIGHLIGHT_DARK_L = 22
+HIGHLIGHT_LIGHT_L = 93
+HIGHLIGHT_MIN_DELTA = 35
+
 _NEIGHBORS_8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 
 
@@ -51,6 +57,7 @@ def merge_small_regions(idx: np.ndarray, palette_lab: np.ndarray, empty: int, mi
     - 「周围最多」按接触的格子计数：上下左右接触记 2，对角接触记 1
     - 票数相同时选与原色最接近的颜色（ΔE00）
     - 周围全是空位的小块（悬空的碎块）不处理，交给 remove_small_islands
+    - 接近黑 / 白、且与要并入的颜色反差很大的小块视为高光 / 瞳孔等细节，保留（见 HIGHLIGHT_*）
     - 合并后可能产生新的小色块，最多重复 max_passes 轮
     """
     if min_size <= 1:
@@ -79,6 +86,8 @@ def merge_small_regions(idx: np.ndarray, palette_lab: np.ndarray, empty: int, mi
             best = max(votes.values())
             candidates = [c for c, v in votes.items() if v == best]
             target = min(candidates, key=lambda c: float(delta_e_2000(palette_lab[color], palette_lab[c])))
+            if _is_highlight(palette_lab[color], palette_lab[target]):
+                continue
             for cell in cells:
                 idx[cell] = target
             changed += len(cells)
@@ -86,6 +95,12 @@ def merge_small_regions(idx: np.ndarray, palette_lab: np.ndarray, empty: int, mi
         if not changed:
             break
     return total
+
+
+def _is_highlight(color_lab: np.ndarray, target_lab: np.ndarray) -> bool:
+    """小色块是否为需要保留的黑 / 白细节：颜色接近黑或白，且与周围颜色反差很大。"""
+    near_bw = color_lab[0] < HIGHLIGHT_DARK_L or color_lab[0] > HIGHLIGHT_LIGHT_L
+    return near_bw and float(delta_e_2000(color_lab, target_lab)) > HIGHLIGHT_MIN_DELTA
 
 
 def remove_small_islands(idx: np.ndarray, empty: int, min_size: int) -> int:

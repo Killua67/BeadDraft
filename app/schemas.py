@@ -171,7 +171,7 @@ class PatternUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=100, description="图纸名称")
     grid: Grid | None = Field(None, description="网格数据（手动编辑后的结果）")
-    done_codes: list[str] | None = Field(None, description="拼豆进度：已拼完的色号列表（施工模式使用）")
+    done_codes: list[str] | None = Field(None, description="拼豆进度条目（施工模式使用）：「色号」表示整张图纸该颜色已拼完；「板边长/板号:色号」表示按该边长分板时某块豆板上该颜色已拼完（板号从 1 开始，按行从左到右），如 A1、29/2:B3")
 
     @field_validator("grid")
     @classmethod
@@ -195,7 +195,8 @@ class PatternSummary(BaseModel):
     created_at: datetime = Field(..., description="创建时间")
     updated_at: datetime = Field(..., description="最后修改时间")
     thumbnail_url: str = Field("", description="缩略图地址")
-    done_color_count: int = Field(0, description="拼豆进度：已拼完的颜色数")
+    done_color_count: int = Field(0, description="拼豆进度：已全部拼完的颜色数")
+    progress: float = Field(0, description="拼豆进度：已拼的豆子占总数的比例 0~1")
 
 
 class PatternDetail(PatternSummary):
@@ -203,7 +204,7 @@ class PatternDetail(PatternSummary):
 
     grid: Grid = Field(..., description="网格数据")
     colors: list[BomItem] = Field(..., description="用量清单")
-    done_codes: list[str] = Field(default_factory=list, description="拼豆进度：已拼完的色号列表")
+    done_codes: list[str] = Field(default_factory=list, description="拼豆进度条目：「色号」表示整张图纸该颜色已拼完；「板边长/板号:色号」表示按该边长分板时某块豆板上该颜色已拼完（板号从 1 开始，按行从左到右），如 A1、29/2:B3")
     params: dict = Field(default_factory=dict, description="生成参数")
 
 

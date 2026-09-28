@@ -57,6 +57,8 @@ tests/                    pytest 测试
 run.py                    启动入口（统一日志格式）
 ```
 
+远程仓库：`git@github.com:Killua67/BeadDraft.git`（origin，主分支 main）。
+
 运行时数据（不提交 Git）：`data/perler.db`（SQLite）、`logs/app.log`、AI 模型 `~/.u2net/*.onnx`（项目目录之外）。
 注意 `.gitignore` 中写的是 `/data/`、`/logs/`（只忽略根目录），`app/data/palettes/` 是源码的一部分，必须提交。
 

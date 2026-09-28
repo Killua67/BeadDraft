@@ -96,3 +96,22 @@ def test_line_priority_keeps_thin_outline_connected(client):
     parts_with, count_with = black_parts(with_lines["grid"])
     assert count_with > count_without
     assert parts_with == 1 and parts_without > 1
+
+
+def test_merge_keeps_highlights():
+    """黑块里的单颗白色高光保留；反差不大的杂点照常合并。"""
+    lab = srgb_to_lab(np.array([[0, 0, 0], [255, 255, 255], [60, 60, 60], [128, 128, 128]]))  # 黑、白、深灰、中灰
+    black_with_white = np.zeros((5, 5), dtype=np.int32)
+    black_with_white[2, 2] = 1
+    merge_small_regions(black_with_white, lab, -1, min_size=3)
+    assert black_with_white[2, 2] == 1  # 高光保留
+
+    black_with_gray = np.zeros((5, 5), dtype=np.int32)
+    black_with_gray[2, 2] = 3
+    merge_small_regions(black_with_gray, lab, -1, min_size=3)
+    assert black_with_gray[2, 2] == 0  # 中灰不是黑白，照常合并
+
+    gray_with_black = np.full((5, 5), 2, dtype=np.int32)
+    gray_with_black[2, 2] = 0
+    merge_small_regions(gray_with_black, lab, -1, min_size=3)
+    assert gray_with_black[2, 2] == 2  # 深灰里的黑点反差小，照常合并

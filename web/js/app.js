@@ -19,6 +19,7 @@
     saturation: 1, contrast: 1, brightness: 1, excluded_codes: [],
   };
   const MAX_UPLOAD_MB = 15;
+  const RING_MAX_BEADS = 300;  // 施工模式：当前颜色不超过这么多颗时才给每颗画红圈
   const SPARE_RATIO = 0.1;
 
   const state = {
@@ -39,7 +40,7 @@
     undo: [], redo: [], stroke: null,  // 撤销栈条目：{ type: 'cells', changes } 或 { type: 'transform', op }
     orientation: { flip: false, rot: 0 },  // 当前方向：先水平翻转（flip），再顺时针旋转 rot × 90°
     done: new Set(),           // 施工模式：已拼完的色号
-    build: { active: false, order: [], index: 0 },  // 施工模式：颜色顺序（按用量从多到少）与当前位置
+    build: { active: false, order: [], index: 0, board: 0 },  // 施工模式：颜色顺序、当前位置、施工范围（0 = 整图，k = 第 k 块板）
     convertCtrl: null,         // 进行中的转换请求（新请求会取消旧请求）
     models: new Map(),         // AI 抠图模型 ID -> 状态（见后端 SegModelStatus）
   };
@@ -244,6 +245,7 @@
     canvas.render();
     updateOutputs();
     updateStats();
+    if (state.build.active) { renderBoardOptions(); setBuildBoard(0); }
     if (state.params.fit_mode === 'board') scheduleConvert(0);
   }
   $('#pitchInput').addEventListener('change', updateStats);
@@ -280,6 +282,9 @@
       state.patternId = null;
       state.orientation = { flip: false, rot: 0 };
       state.done.clear();
+      state.undo = [];
+      state.redo = [];
+      $('#regenBar').hidden = true;
       if (state.build.active) exitBuild();
       canvas.setImage(img);
       const preview = $('#sourcePreview');
@@ -298,12 +303,29 @@
   // ============================================================ 转换
 
   let convertTimer = 0;
-  function scheduleConvert(delay) {
+  /**
+   * 参数变化后重新生成。有手动修改时不自动生成（会覆盖修改），而是在画布下方提示，由用户决定。
+   * force = true：用户已确认，直接生成。
+   */
+  function scheduleConvert(delay, force = false) {
     if (!state.file) return;
     if (aiModelMissing()) return; // 模型下载完成后会自动重新生成
+    if (!force && manualEditCount() > 0) return showRegenBar();
     clearTimeout(convertTimer);
     convertTimer = setTimeout(convert, delay);
   }
+
+  /** 当前仍生效的手动修改格数（撤销栈里的画笔 / 橡皮操作） */
+  function manualEditCount() {
+    return state.undo.reduce((n, e) => n + (e.type === 'cells' ? e.changes.length : 0), 0);
+  }
+
+  function showRegenBar() {
+    $('#regenText').textContent = `你手动修改过 ${manualEditCount()} 格，重新生成会覆盖这些修改。参数已记下，可以继续调整。`;
+    $('#regenBar').hidden = false;
+  }
+  $('#regenBtn').addEventListener('click', () => { $('#regenBar').hidden = true; scheduleConvert(0, true); });
+  $('#regenDismiss').addEventListener('click', () => { $('#regenBar').hidden = true; });
 
   async function convert() {
     if (!state.file) return;
@@ -314,6 +336,7 @@
     try {
       const result = await Api.convert(state.file, state.params, ctrl.signal);
       state.warnings = result.warnings;
+      $('#regenBar').hidden = true;
       state.undo = [];
       state.redo = [];
       state.done.clear();  // 重新生成后颜色分布变了，进度作废
@@ -485,8 +508,9 @@
       return;
     }
     const current = state.build.active ? state.build.order[state.build.index] : null;
+    const doneColors = doneColorSet();
     box.innerHTML = bom.map((item) => `
-      <button type="button" class="bom-row ${state.highlight === item.code ? 'active' : ''} ${state.done.has(item.code) ? 'done' : ''} ${current === item.code ? 'current' : ''}" data-code="${escapeHtml(item.code)}"
+      <button type="button" class="bom-row ${state.highlight === item.code ? 'active' : ''} ${doneColors.has(item.code) ? 'done' : ''} ${current === item.code ? 'current' : ''}" data-code="${escapeHtml(item.code)}"
         title="建议购买 ${Math.ceil(item.count * (1 + SPARE_RATIO))} 颗（含 10% 损耗）">
         <span class="bom-swatch" style="background:${item.hex}"></span>
         <span class="bom-name"><b>${escapeHtml(item.code)}</b>${item.name !== item.code ? `<span>${escapeHtml(item.name)}</span>` : ''}</span>
@@ -499,7 +523,9 @@
     if (!row) return;
     const code = row.dataset.code;
     if (state.build.active) {
-      state.build.index = Math.max(0, state.build.order.indexOf(code));
+      const i = state.build.order.indexOf(code);
+      if (i < 0) return toast(`第 ${state.build.board} 块板上没有 ${code}`, 'error');
+      state.build.index = i;
       updateBuild();
       return;
     }
@@ -617,6 +643,10 @@
     markDirty(true);
     canvas.render();
     refreshResult();
+    if (!$('#regenBar').hidden && manualEditCount() === 0) {
+      $('#regenBar').hidden = true;
+      scheduleConvert(0); // 手动修改都撤销了，直接应用之前搁置的参数
+    }
   }
 
   function redo() {
@@ -704,33 +734,104 @@
 
   // ============================================================ 逐色施工模式
 
+  /*
+   * 进度条目（state.done，与后端格式一致）：
+   *   "A1"        整张图纸的 A1 都已拼完
+   *   "29/2:A1"   按 29×29 分板时第 2 块板上的 A1 已拼完（板号从 1 开始，按行从左到右）
+   * 施工范围（state.build.board）：0 = 整张图纸，k = 只拼第 k 块豆板。
+   */
+
+  /** 当前豆板布局：边长、横向 / 纵向块数 */
+  function boardLayout() {
+    const bs = state.params.board_size;
+    const cols = state.grid[0].length;
+    const rows = state.grid.length;
+    return { bs, bx: Math.ceil(cols / bs), by: Math.ceil(rows / bs), count: Math.ceil(cols / bs) * Math.ceil(rows / bs) };
+  }
+
+  function boardOf(r, c, layout = boardLayout()) {
+    return Math.floor(r / layout.bs) * layout.bx + Math.floor(c / layout.bs) + 1;
+  }
+
+  /** 第 b 块板的格子范围 { x0, y0, w, h } */
+  function boardRect(b, layout = boardLayout()) {
+    const x0 = ((b - 1) % layout.bx) * layout.bs;
+    const y0 = Math.floor((b - 1) / layout.bx) * layout.bs;
+    return { x0, y0, w: Math.min(layout.bs, state.grid[0].length - x0), h: Math.min(layout.bs, state.grid.length - y0) };
+  }
+
+  function isCellDone(code, r, c, layout = boardLayout()) {
+    return state.done.has(code) || state.done.has(`${layout.bs}/${boardOf(r, c, layout)}:${code}`);
+  }
+
+  /** 统计某个范围（0 = 整图）内每种颜色的颗数和已拼颗数：Map<色号, { total, done }> */
+  function scopeCounts(board) {
+    const layout = boardLayout();
+    const rect = board ? boardRect(board, layout) : { x0: 0, y0: 0, w: state.grid[0].length, h: state.grid.length };
+    const counts = new Map();
+    for (let r = rect.y0; r < rect.y0 + rect.h; r++) {
+      for (let c = rect.x0; c < rect.x0 + rect.w; c++) {
+        const code = state.grid[r][c];
+        if (code == null) continue;
+        const item = counts.get(code) || { total: 0, done: 0 };
+        item.total += 1;
+        if (isCellDone(code, r, c, layout)) item.done += 1;
+        counts.set(code, item);
+      }
+    }
+    return counts;
+  }
+
+  function scopeProgress(counts) {
+    let total = 0;
+    let done = 0;
+    for (const v of counts.values()) { total += v.total; done += v.done; }
+    return { total, done, doneColors: [...counts.values()].filter((v) => v.done === v.total).length };
+  }
+
+  /** 整图范围内已全部拼完的色号集合（用量清单打勾用） */
+  function doneColorSet() {
+    if (!state.grid || !state.done.size) return new Set();
+    return new Set([...scopeCounts(0)].filter(([, v]) => v.done === v.total).map(([code]) => code));
+  }
+
   function updateBuildButton(bom = computeBom()) {
     const btn = $('#buildBtn');
     btn.disabled = !state.grid || !bom.length;
-    const done = bom.filter((c) => state.done.has(c.code)).length;
-    btn.textContent = state.build.active ? '退出施工' : done ? `继续拼豆（${done}/${bom.length}）` : '开始拼豆';
+    const done = state.grid ? doneColorSet().size : 0;
+    btn.textContent = state.build.active ? '退出施工' : done || state.done.size ? `继续拼豆（${done}/${bom.length}）` : '开始拼豆';
   }
   $('#buildBtn').addEventListener('click', () => (state.build.active ? exitBuild() : enterBuild()));
 
+  /** 施工范围内的颜色顺序：按该范围内的颗数从多到少 */
+  function scopeOrder(board) {
+    const counts = scopeCounts(board);
+    const order = new Map(state.palette.colors.map((c, i) => [c.code, i]));
+    return [...counts].sort((a, b) => b[1].total - a[1].total || order.get(a[0]) - order.get(b[0])).map(([code]) => code);
+  }
+
   function enterBuild() {
-    const order = computeBom().map((c) => c.code);
-    if (!order.length) return;
-    const firstTodo = order.findIndex((c) => !state.done.has(c));
-    state.build = { active: true, order, index: Math.max(0, firstTodo) };
+    if (!state.grid) return;
+    const layout = boardLayout();
+    // 多块板时默认从第一块还没拼完的板开始，一块一块拼
+    let board = 0;
+    if (layout.count > 1) {
+      board = nextUnfinishedBoard(0) || 0;
+    }
+    state.build = { active: true, order: [], index: 0, board };
     setTool('pan');
     state.highlight = null;
     canvas.highlight = null;
     wrap.classList.add('building');
     $('#buildBar').hidden = false;
-    updateBuild();
-    canvas.insetTop = $('#buildBar').offsetHeight + 16; // 图纸让出施工栏的位置，不被遮挡
-    canvas.fit();
-    updateZoomLabel();
+    renderBoardOptions();
+    setBuildBoard(board);
   }
 
   function exitBuild() {
     state.build.active = false;
     canvas.build = null;
+    canvas.focus = null;
     wrap.classList.remove('building');
     $('#buildBar').hidden = true;
     canvas.insetTop = 0;
@@ -739,42 +840,131 @@
     refreshResult();
   }
 
-  /** 刷新施工栏：当前颜色、第几色、按颗数计算的整体进度 */
+  /** 从 after 之后找下一块还有没拼完豆子的板（循环查找），都拼完返回 0 */
+  function nextUnfinishedBoard(after) {
+    const { count } = boardLayout();
+    for (let i = 1; i <= count; i++) {
+      const b = ((after + i - 1) % count) + 1;
+      const p = scopeProgress(scopeCounts(b));
+      if (p.total && p.done < p.total) return b;
+    }
+    return 0;
+  }
+
+  /** 施工栏里的豆板下拉框：只列出有豆子的板，并显示各自进度 */
+  function renderBoardOptions() {
+    const layout = boardLayout();
+    const select = $('#buildBoard');
+    select.hidden = layout.count <= 1;
+    if (layout.count <= 1) return;
+    const whole = scopeProgress(scopeCounts(0));
+    const options = [`<option value="0">整张图纸（${Math.round((whole.done / whole.total) * 100)}%）</option>`];
+    for (let b = 1; b <= layout.count; b++) {
+      const p = scopeProgress(scopeCounts(b));
+      if (!p.total) continue;
+      const row = Math.floor((b - 1) / layout.bx) + 1;
+      const col = ((b - 1) % layout.bx) + 1;
+      const mark = p.done === p.total ? '✓ ' : '';
+      options.push(`<option value="${b}">${mark}第 ${b} 块 · ${row} 行 ${col} 列（${Math.round((p.done / p.total) * 100)}%）</option>`);
+    }
+    select.innerHTML = options.join('');
+    select.value = String(state.build.board);
+  }
+
+  function setBuildBoard(board) {
+    const b = state.build;
+    b.board = board;
+    b.order = scopeOrder(board);
+    const counts = scopeCounts(board);
+    const firstTodo = b.order.findIndex((code) => counts.get(code).done < counts.get(code).total);
+    b.index = Math.max(0, firstTodo);
+    canvas.focus = board ? boardRect(board) : null;
+    $('#buildBoard').value = String(board);
+    updateBuild();
+    canvas.insetTop = $('#buildBar').offsetHeight + 16; // 图纸让出施工栏的位置，不被遮挡
+    canvas.fit();
+    updateZoomLabel();
+  }
+  $('#buildBoard').addEventListener('change', (e) => setBuildBoard(Number(e.target.value)));
+
+  /** 刷新施工栏：当前颜色、第几色、按颗数计算的范围进度 */
   function updateBuild() {
     const b = state.build;
-    const bom = computeBom();
+    if (!b.order.length) return exitBuild();
     const code = b.order[b.index];
-    const item = bom.find((c) => c.code === code);
-    if (!item) return exitBuild();
-    const totalBeads = bom.reduce((sum, c) => sum + c.count, 0);
-    const doneItems = bom.filter((c) => state.done.has(c.code));
-    const doneBeads = doneItems.reduce((sum, c) => sum + c.count, 0);
+    const counts = scopeCounts(b.board);
+    const item = state.colorMap.get(code);
+    const current = counts.get(code);
+    if (!item || !current) return exitBuild();
+    const progress = scopeProgress(counts);
+    const layout = boardLayout();
 
-    canvas.build = { current: code, done: state.done };
+    // 红圈用来找散落的豆子；颗数很多时整片高亮已经够明显，画圈反而显得杂乱
+    canvas.build = { current: code, ring: current.total <= RING_MAX_BEADS, isDone: (c, r, col) => isCellDone(c, r, col, layout) };
     canvas.render();
     $('#buildSwatch').style.background = item.hex;
     $('#buildCode').textContent = code;
     $('#buildName').textContent = item.name !== code ? item.name : '';
-    $('#buildCount').textContent = `${item.count} 颗`;
-    $('#buildSub').textContent = `第 ${b.index + 1}/${b.order.length} 色 · 已完成 ${doneItems.length} 色、${doneBeads}/${totalBeads} 颗`;
-    $('#buildProgress').style.width = `${(doneBeads / totalBeads) * 100}%`;
-    $('#buildDone').textContent = state.done.has(code) ? '↺ 标记未完成' : '✓ 完成此色';
+    $('#buildCount').textContent = `${current.total} 颗`;
+    const scope = b.board ? `第 ${b.board} 块` : '整张图纸';
+    $('#buildSub').textContent = `${scope} · 第 ${b.index + 1}/${b.order.length} 色 · 已拼 ${progress.done}/${progress.total} 颗`;
+    $('#buildProgress').style.width = `${(progress.done / progress.total) * 100}%`;
+    $('#buildDone').textContent = current.done === current.total ? '↺ 标记未完成' : '✓ 完成此色';
+    renderBoardOptions();
+    const bom = computeBom();
     renderBom(bom);
     updateBuildButton(bom);
   }
 
-  /** 完成（或取消完成）当前颜色，完成后自动跳到下一个未完成的颜色 */
+  /** 标记 / 取消某颜色在某范围内已拼完 */
+  function setDone(code, board, value) {
+    const { bs } = boardLayout();
+    if (!board) {
+      state.done.delete(code);
+      for (const e of [...state.done]) if (e.startsWith(`${bs}/`) && e.endsWith(`:${code}`)) state.done.delete(e);
+      if (value) state.done.add(code);
+      return;
+    }
+    const key = `${bs}/${board}:${code}`;
+    if (value) {
+      state.done.add(key);
+    } else {
+      state.done.delete(key);
+      if (state.done.has(code)) {
+        // 原来整图标记为完成：拆成其他各块已完成，只取消当前这一块
+        state.done.delete(code);
+        for (let other = 1; other <= boardLayout().count; other++) {
+          if (other !== board && scopeCounts(other).has(code)) state.done.add(`${bs}/${other}:${code}`);
+        }
+      }
+    }
+  }
+
+  /** 完成（或取消完成）当前颜色，完成后自动跳到下一个未完成的颜色；一块板拼完自动切到下一块 */
   function completeCurrent() {
     const b = state.build;
     const code = b.order[b.index];
-    if (state.done.has(code)) {
-      state.done.delete(code);
-    } else {
-      state.done.add(code);
-      const later = b.order.findIndex((c, i) => i > b.index && !state.done.has(c));
-      const next = later >= 0 ? later : b.order.findIndex((c) => !state.done.has(c));
-      if (next >= 0) b.index = next;
-      else toast('🎉 全部颜色都拼完了！');
+    const current = scopeCounts(b.board).get(code);
+    const finished = current.done === current.total;
+    setDone(code, b.board, !finished);
+    if (!finished) {
+      const counts = scopeCounts(b.board);
+      const todo = (c) => counts.get(c).done < counts.get(c).total;
+      const later = b.order.findIndex((c, i) => i > b.index && todo(c));
+      const next = later >= 0 ? later : b.order.findIndex(todo);
+      if (next >= 0) {
+        b.index = next;
+      } else if (b.board) {
+        const nextBoard = nextUnfinishedBoard(b.board);
+        saveProgress();
+        if (nextBoard) {
+          toast(`第 ${b.board} 块拼完了，切换到第 ${nextBoard} 块`);
+          return setBuildBoard(nextBoard);
+        }
+        toast('🎉 所有豆板都拼完了！');
+      } else {
+        toast('🎉 全部颜色都拼完了！');
+      }
     }
     saveProgress();
     updateBuild();
@@ -853,10 +1043,13 @@
   $('#saveAsBtn').addEventListener('click', () => save(true));
 
   function confirmDiscard() {
-    return !(state.dirty && state.patternId && !confirm('当前图纸有未保存的修改，确定放弃吗？'));
+    if (state.dirty && state.patternId) return confirm('当前图纸有未保存的修改，确定放弃吗？');
+    const edits = manualEditCount();
+    if (edits && state.dirty) return confirm(`你手动修改过 ${edits} 格且还没保存，确定放弃吗？`);
+    return true;
   }
   window.addEventListener('beforeunload', (e) => {
-    if (state.dirty && state.patternId) e.preventDefault();
+    if (state.dirty && (state.patternId || manualEditCount())) e.preventDefault();
   });
 
   // ============================================================ 导出
@@ -905,8 +1098,8 @@
           <img src="${p.thumbnail_url}" alt="" loading="lazy">
           <div class="history-meta">
             <b>${escapeHtml(p.name)}</b>
-            <span>${p.width}×${p.height} · ${p.bead_count} 颗 · ${p.color_count} 色${p.done_color_count
-              ? ` · 已拼 ${p.done_color_count}/${p.color_count} 色` : ''} · ${formatTime(p.updated_at)}</span>
+            <span>${p.width}×${p.height} · ${p.bead_count} 颗 · ${p.color_count} 色${p.progress
+              ? ` · 已拼 ${Math.round(p.progress * 100)}%` : ''} · ${formatTime(p.updated_at)}</span>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" data-delete="${p.id}" title="删除">✕</button>
         </div>`).join('');
@@ -961,6 +1154,7 @@
       state.redo = [];
       state.orientation = { flip: false, rot: 0 };  // 保存的网格已经是翻转 / 旋转后的结果
       state.done = new Set(detail.done_codes || []);
+      $('#regenBar').hidden = true;
       if (state.build.active) exitBuild();
       $('#patternName').value = detail.name;
       applyGrid(detail.grid);

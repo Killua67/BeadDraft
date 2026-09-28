@@ -227,11 +227,17 @@
           <div class="progress"><i id="buildProgress"></i></div>
         </div>
         <div class="build-actions">
+          <select id="buildBoard" class="input-sm build-board" title="按豆板拼：只看某一块板" hidden></select>
           <button type="button" class="btn btn-sm" id="buildPrev" title="上一色（←）">‹</button>
           <button type="button" class="btn btn-sm btn-primary" id="buildDone" title="完成此色（Enter）">✓ 完成此色</button>
           <button type="button" class="btn btn-sm" id="buildNext" title="下一色（→）">›</button>
           <button type="button" class="btn btn-sm btn-ghost" id="buildExit" title="退出施工模式（Esc）">退出</button>
         </div>
+      </div>
+      <div class="regen-bar" id="regenBar" role="status" hidden>
+        <span id="regenText"></span>
+        <button type="button" class="btn btn-sm btn-primary" id="regenBtn">重新生成</button>
+        <button type="button" class="btn btn-sm btn-ghost" id="regenDismiss">暂不</button>
       </div>
       <div class="tooltip" id="tooltip" hidden></div>
     </div>

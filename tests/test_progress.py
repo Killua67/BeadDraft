@@ -55,3 +55,28 @@ def test_dither_skips_region_merge(client):
     dithered = convert(dither="floyd_steinberg", dither_strength=0.8, min_region_size=6)
     dithered_no_merge = convert(dither="floyd_steinberg", dither_strength=0.8, min_region_size=0)
     assert dithered["grid"] == dithered_no_merge["grid"]
+
+
+def test_board_progress_entries():
+    """按豆板记录进度：29/2:A1 只算第 2 块板上的 A1。"""
+    from app.services.pattern_service import board_index, clean_progress, progress_stats
+
+    # 4 列 × 2 行，按 2×2 分板：第 1 块是左两列，第 2 块是右两列
+    grid = [["A1", "A1", "A1", "H7"], ["A1", "B3", "A1", "H7"]]
+    assert [board_index(0, c, 4, 2) for c in range(4)] == [1, 1, 2, 2]
+
+    assert progress_stats(grid, ["2/1:A1"]) == (0, round(3 / 8, 4))       # A1 只拼了第 1 块上的 3 颗
+    assert progress_stats(grid, ["2/1:A1", "2/2:A1"]) == (1, round(5 / 8, 4))  # 两块都拼完 = A1 全部完成
+    assert progress_stats(grid, ["A1", "H7", "B3"]) == (3, 1.0)
+
+    cleaned = clean_progress(["2/1:A1", "0/1:A1", "2/x:A1", "2/1:Z9", "H7", "2/1:A1"], grid)
+    assert cleaned == ["2/1:A1", "H7"]
+
+
+def test_board_progress_api(client):
+    grid = [["A1", "A1", "A1", "H7"], ["A1", "B3", "A1", "H7"]]
+    pid = client.post("/api/patterns", json={"name": "分板进度", "palette_id": "mard_221", "grid": grid}).json()["id"]
+    updated = client.put(f"/api/patterns/{pid}", json={"done_codes": ["2/1:A1", "2/1:B3", "bad/entry:A1"]}).json()
+    assert updated["done_codes"] == ["2/1:A1", "2/1:B3"]
+    assert updated["done_color_count"] == 1 and updated["progress"] == round(4 / 8, 4)
+    client.delete(f"/api/patterns/{pid}")

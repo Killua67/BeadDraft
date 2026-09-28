@@ -7,6 +7,7 @@
  *   image 原图（对照用）
  *
  * 施工模式（build 不为空）：当前颜色正常显示并加红圈，已完成的颜色淡显，其余颜色几乎隐藏。
+ * 聚焦区域（focus 不为空）：只拼某一块豆板时，适应窗口只看这块板，板外区域蒙灰。
  *
  * 与业务的交互通过构造参数里的回调完成：onHover / onLeave / onCellDown / onCellEnter / onCellUp。
  */
@@ -26,7 +27,8 @@ class PatternCanvas {
     this.showBoards = true;
     this.boardSize = 29;
     this.highlight = null;     // 高亮的色号
-    this.build = null;         // 施工模式：{ current: 当前色号, done: Set<已完成色号> }
+    this.build = null;         // 施工模式：{ current: 当前色号, isDone(code, r, c): 该格是否已拼 }
+    this.focus = null;         // 聚焦区域（格）：{ x0, y0, w, h }，施工模式按豆板拼时使用
     this.insetTop = 0;         // 顶部被浮层（施工栏）占用的高度，适应窗口时让出这部分
 
     this.scale = 16;           // 每格 CSS 像素
@@ -78,10 +80,11 @@ class PatternCanvas {
     const { width, height } = this.wrap.getBoundingClientRect();
     const pad = 24;
     const top = this.insetTop;
-    const s = Math.min((width - pad * 2) / this.cols, (height - top - pad * 2) / this.rows);
+    const area = this.focus || { x0: 0, y0: 0, w: this.cols, h: this.rows };
+    const s = Math.min((width - pad * 2) / area.w, (height - top - pad * 2) / area.h);
     this.scale = clamp(s, this.minScale, this.maxScale);
-    this.ox = (width - this.cols * this.scale) / 2;
-    this.oy = top + (height - top - this.rows * this.scale) / 2;
+    this.ox = (width - area.w * this.scale) / 2 - area.x0 * this.scale;
+    this.oy = top + (height - top - area.h * this.scale) / 2 - area.y0 * this.scale;
     this._fitted = true;
     this.render();
   }
@@ -204,7 +207,7 @@ class PatternCanvas {
         }
         const color = this.colors.get(code);
         if (!color) continue;
-        ctx.globalAlpha = this._alpha(code);
+        ctx.globalAlpha = this._alpha(code, r, c);
         if (asCircle) {
           ctx.fillStyle = color.fill;
           ctx.beginPath();
@@ -225,16 +228,21 @@ class PatternCanvas {
       }
     }
     ctx.globalAlpha = 1;
-    if (this.build && s >= 5) this._ringCurrent(r0, r1, c0, c1);
+    if (this.build?.ring && s >= 5) this._ringCurrent(r0, r1, c0, c1);
   }
 
   /** 格子透明度：施工模式 > 高亮 > 正常 */
-  _alpha(code) {
+  _alpha(code, r, c) {
     if (this.build) {
-      if (code === this.build.current) return 1;
-      return this.build.done.has(code) ? 0.3 : 0.07;
+      if (code === this.build.current && !this.build.isDone(code, r, c)) return 1;
+      return this.build.isDone(code, r, c) ? 0.3 : 0.07;
     }
     return this.highlight && this.highlight !== code ? 0.12 : 1;
+  }
+
+  _inFocus(r, c) {
+    const f = this.focus;
+    return !f || (c >= f.x0 && c < f.x0 + f.w && r >= f.y0 && r < f.y0 + f.h);
   }
 
   /** 施工模式：给当前颜色的格子描红圈，散落的单颗豆也容易找到 */
@@ -243,10 +251,10 @@ class PatternCanvas {
     const s = this.scale;
     ctx.beginPath();
     ctx.strokeStyle = '#F2545B';
-    ctx.lineWidth = Math.max(1.5, s * 0.09);
+    ctx.lineWidth = Math.max(1.2, s * 0.08);
     for (let r = r0; r < r1; r++) {
       for (let c = c0; c < c1; c++) {
-        if (this.grid[r][c] !== this.build.current) continue;
+        if (this.grid[r][c] !== this.build.current || !this._inFocus(r, c)) continue;
         const x = this.ox + c * s + s / 2;
         const y = this.oy + r * s + s / 2;
         ctx.moveTo(x + s * 0.5, y);
@@ -299,6 +307,23 @@ class PatternCanvas {
     ctx.strokeStyle = 'rgba(0,0,0,.35)';
     ctx.lineWidth = 1;
     ctx.strokeRect(snap(this.ox), snap(this.oy), Math.round(gw), Math.round(gh));
+
+    // 聚焦区域：板外蒙灰，当前板描红框
+    if (this.focus) {
+      const f = this.focus;
+      const fx = this.ox + f.x0 * s;
+      const fy = this.oy + f.y0 * s;
+      const fw = f.w * s;
+      const fh = f.h * s;
+      ctx.fillStyle = 'rgba(237, 235, 230, 0.82)';
+      ctx.fillRect(this.ox, this.oy, gw, fy - this.oy);                            // 上
+      ctx.fillRect(this.ox, fy + fh, gw, this.oy + gh - fy - fh);                  // 下
+      ctx.fillRect(this.ox, fy, fx - this.ox, fh);                                 // 左
+      ctx.fillRect(fx + fw, fy, this.ox + gw - fx - fw, fh);                       // 右
+      ctx.strokeStyle = '#F2545B';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(fx, fy, fw, fh);
+    }
   }
 
   // ------------------------------------------------------------ 交互

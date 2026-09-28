@@ -39,7 +39,7 @@ class Pattern(Base):
     source_filename: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="原始图片文件名，可为空")
     done_codes_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="[]", server_default="[]",
-        comment='拼豆进度：施工模式中已拼完的色号列表 JSON，如 ["A1","H7"]；空列表表示还没开始',
+        comment='拼豆进度条目列表 JSON，空列表表示还没开始。条目格式：「色号」表示整张图纸该颜色已拼完；「板边长/板号:色号」表示按该边长分板时某块豆板上该颜色已拼完（板号从 1 开始，按行从左到右），如 A1、29/2:B3',
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时间（本地时间）")
     updated_at: Mapped[datetime] = mapped_column(
