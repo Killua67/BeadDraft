@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "perler-bead",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "run.py"],
+      "port": 8520
+    }
+  ]
+}

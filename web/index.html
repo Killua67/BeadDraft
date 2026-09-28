@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>拼豆图纸生成器</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23F2545B'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-dot"></span>
+    <h1>拼豆图纸生成器</h1>
+  </div>
+  <nav class="topbar-links">
+    <a href="/docs" target="_blank" rel="noopener">API 文档</a>
+  </nav>
+</header>
+
+<main class="layout">
+  <!-- ============ 左侧：图片与参数 ============ -->
+  <aside class="panel panel-left" aria-label="参数设置">
+    <section class="card">
+      <h2>图片</h2>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <img id="sourcePreview" alt="" hidden>
+        <span class="dropzone-text" id="dropzoneText">点击、拖入或粘贴图片</span>
+      </label>
+      <p class="hint" id="fileName"></p>
+    </section>
+
+    <section class="card">
+      <h2>色卡与尺寸</h2>
+      <div class="field">
+        <label for="paletteSelect">色卡</label>
+        <div class="row-inline">
+          <select id="paletteSelect"></select>
+          <button class="btn btn-ghost btn-sm" id="managePalettesBtn" type="button" title="自定义色卡">管理</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="widthRange">宽度 <output id="widthOut">52</output> 格</label>
+        <input type="range" id="widthRange" min="8" max="200" value="52" data-param="width">
+      </div>
+      <div class="field field-check">
+        <label><input type="checkbox" id="customHeight"> 自定义高度</label>
+        <input type="number" id="heightInput" min="4" max="200" value="52" disabled class="input-sm">
+      </div>
+      <div class="field">
+        <label for="boardSelect">豆板规格</label>
+        <select id="boardSelect">
+          <option value="29">29 × 29（标准大方板）</option>
+          <option value="52">52 × 52（迷你豆大板）</option>
+          <option value="14">14 × 14（小方板）</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>颜色</h2>
+      <div class="field">
+        <label for="maxColorsRange">最多 <output id="maxColorsOut">24</output> 色</label>
+        <input type="range" id="maxColorsRange" min="0" max="64" value="24" data-param="max_colors">
+        <p class="hint">0 表示不限制。颜色越少越好买、越好拼。</p>
+      </div>
+      <div class="field">
+        <button class="btn btn-ghost btn-block" id="excludeBtn" type="button">排除颜色（手上没有的）<span id="excludeCount"></span></button>
+      </div>
+      <div class="field">
+        <label for="saturationRange">饱和度 <output id="saturationOut">1.0</output></label>
+        <input type="range" id="saturationRange" min="0" max="2" step="0.05" value="1" data-param="saturation">
+      </div>
+      <div class="field">
+        <label for="contrastRange">对比度 <output id="contrastOut">1.0</output></label>
+        <input type="range" id="contrastRange" min="0.5" max="2" step="0.05" value="1" data-param="contrast">
+      </div>
+      <div class="field">
+        <label for="brightnessRange">亮度 <output id="brightnessOut">1.0</output></label>
+        <input type="range" id="brightnessRange" min="0.5" max="1.5" step="0.05" value="1" data-param="brightness">
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>处理</h2>
+      <div class="field field-check">
+        <label><input type="checkbox" data-param="remove_background"> 去除背景</label>
+      </div>
+      <div class="field sub-field" id="bgTolField">
+        <label for="bgTolRange">背景容差 <output id="bgTolOut">12</output></label>
+        <input type="range" id="bgTolRange" min="2" max="40" value="12" data-param="bg_tolerance">
+      </div>
+      <div class="field field-check">
+        <label><input type="checkbox" data-param="outline"> 主体描边</label>
+        <select id="outlineSelect" class="input-sm" data-param="outline_code"></select>
+      </div>
+      <div class="field field-check">
+        <label><input type="checkbox" data-param="clean_isolated" checked> 清理孤立杂点</label>
+      </div>
+      <div class="field">
+        <label for="resampleSelect">缩放方式</label>
+        <select id="resampleSelect" data-param="resample">
+          <option value="box">区域平均（照片 / 插画）</option>
+          <option value="nearest">最近邻（像素画原图）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="ditherSelect">抖动</label>
+        <select id="ditherSelect" data-param="dither">
+          <option value="none">不抖动（推荐）</option>
+          <option value="floyd_steinberg">误差扩散（渐变更细，但散点多）</option>
+        </select>
+      </div>
+      <div class="field sub-field" id="ditherStrengthField">
+        <label for="ditherRange">抖动强度 <output id="ditherOut">0.6</output></label>
+        <input type="range" id="ditherRange" min="0.1" max="1" step="0.05" value="0.6" data-param="dither_strength">
+      </div>
+    </section>
+  </aside>
+
+  <!-- ============ 中间：画布 ============ -->
+  <section class="stage" aria-label="图纸预览">
+    <div class="toolbar">
+      <div class="segmented" role="tablist" id="viewSwitch">
+        <button type="button" data-view="bead" class="active">拼豆效果</button>
+        <button type="button" data-view="chart">图纸</button>
+        <button type="button" data-view="image">原图</button>
+      </div>
+      <div class="tool-group" id="toolSwitch">
+        <button type="button" class="tool active" data-tool="pan" title="移动（H）">✋</button>
+        <button type="button" class="tool" data-tool="brush" title="画笔（B）">🖌</button>
+        <button type="button" class="tool" data-tool="eraser" title="橡皮（E）">⌫</button>
+        <button type="button" class="tool" data-tool="picker" title="吸管（I）">💧</button>
+        <span class="paint-chip" id="paintChip" title="当前画笔颜色，点右侧用量清单可切换"></span>
+      </div>
+      <div class="tool-group">
+        <button type="button" class="tool" id="undoBtn" title="撤销（Ctrl+Z）" disabled>↶</button>
+        <button type="button" class="tool" id="redoBtn" title="重做（Ctrl+Shift+Z）" disabled>↷</button>
+      </div>
+      <div class="tool-group">
+        <label class="toggle"><input type="checkbox" id="gridToggle" checked> 网格</label>
+        <label class="toggle"><input type="checkbox" id="boardToggle" checked> 分板线</label>
+      </div>
+      <div class="tool-group zoom">
+        <button type="button" class="tool" id="zoomOut" title="缩小">−</button>
+        <span id="zoomLabel">100%</span>
+        <button type="button" class="tool" id="zoomIn" title="放大">＋</button>
+        <button type="button" class="tool" id="zoomFit" title="适应窗口">⤢</button>
+      </div>
+    </div>
+    <div class="canvas-wrap" id="canvasWrap">
+      <canvas id="canvas"></canvas>
+      <div class="empty-state" id="emptyState">
+        <div class="empty-beads" aria-hidden="true">
+          <i style="--c:#F2545B"></i><i style="--c:#FFC857"></i><i style="--c:#3BB273"></i><i style="--c:#3E7CB1"></i><i style="--c:#8E5DB0"></i>
+        </div>
+        <p>上传一张图片开始生成拼豆图纸</p>
+        <p class="hint">支持 PNG / JPG / WEBP，透明背景 PNG 效果最好</p>
+      </div>
+      <div class="loading" id="loading" hidden><span class="spinner"></span>生成中…</div>
+      <div class="tooltip" id="tooltip" hidden></div>
+    </div>
+  </section>
+
+  <!-- ============ 右侧：统计、用量、导出 ============ -->
+  <aside class="panel panel-right" aria-label="结果">
+    <section class="card">
+      <div class="stats" id="stats">
+        <div><span class="stat-value" id="statSize">–</span><span class="stat-label">尺寸（格）</span></div>
+        <div><span class="stat-value" id="statBeads">–</span><span class="stat-label">豆子（颗）</span></div>
+        <div><span class="stat-value" id="statColors">–</span><span class="stat-label">颜色</span></div>
+        <div><span class="stat-value" id="statBoards">–</span><span class="stat-label">豆板（块）</span></div>
+      </div>
+      <p class="hint" id="statPhysical"></p>
+      <ul class="warnings" id="warnings"></ul>
+    </section>
+
+    <section class="card card-grow">
+      <h2>用量清单 <span class="hint">点击高亮 / 选作画笔色</span></h2>
+      <div class="bom" id="bom"><p class="hint">生成后显示每种颜色需要的颗数</p></div>
+    </section>
+
+    <section class="card">
+      <h2>保存与导出</h2>
+      <div class="field row-inline">
+        <input type="text" id="patternName" placeholder="图纸名称" maxlength="100">
+        <button class="btn btn-primary" id="saveBtn" type="button" disabled>保存</button>
+      </div>
+      <p class="hint save-hint"><span id="saveHint"></span>
+        <button class="btn btn-ghost btn-sm" id="saveAsBtn" type="button" hidden>另存为新图纸</button></p>
+      <div class="field">
+        <label for="pitchInput">打印豆距（mm）</label>
+        <input type="number" id="pitchInput" min="1" max="20" step="0.1" class="input-sm">
+      </div>
+      <div class="export-grid">
+        <button class="btn" data-export="pdf" type="button" disabled>PDF 分板打印</button>
+        <button class="btn" data-export="png" type="button" disabled>PNG 图纸</button>
+        <button class="btn" data-export="csv" type="button" disabled>CSV 用量</button>
+        <button class="btn" data-export="json" type="button" disabled>JSON 数据</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>我的图纸</h2>
+      <div class="history" id="history"><p class="hint">还没有保存的图纸</p></div>
+    </section>
+  </aside>
+</main>
+
+<!-- 排除颜色弹窗 -->
+<dialog id="excludeDialog" class="dialog">
+  <form method="dialog">
+    <header class="dialog-header">
+      <h3>排除颜色</h3>
+      <button class="btn btn-ghost btn-sm" value="close" aria-label="关闭">✕</button>
+    </header>
+    <p class="hint">点击色块切换。被排除的颜色不会出现在图纸中（例如手上没有的颜色）。</p>
+    <div class="dialog-actions-top">
+      <button type="button" class="btn btn-sm" id="excludeNone">全部启用</button>
+      <button type="button" class="btn btn-sm" id="excludeUnused">只保留当前图纸用到的</button>
+    </div>
+    <div class="swatch-grid" id="excludeGrid"></div>
+    <footer class="dialog-footer">
+      <button class="btn btn-primary" value="apply" id="excludeApply">应用</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- 画笔颜色弹窗 -->
+<dialog id="paintDialog" class="dialog">
+  <form method="dialog">
+    <header class="dialog-header">
+      <h3>选择画笔颜色</h3>
+      <button class="btn btn-ghost btn-sm" value="close" aria-label="关闭">✕</button>
+    </header>
+    <div class="swatch-grid" id="paintGrid"></div>
+  </form>
+</dialog>
+
+<!-- 自定义色卡弹窗 -->
+<dialog id="paletteDialog" class="dialog">
+  <form method="dialog" id="paletteForm">
+    <header class="dialog-header">
+      <h3>自定义色卡</h3>
+      <button class="btn btn-ghost btn-sm" value="close" aria-label="关闭">✕</button>
+    </header>
+    <div id="customPaletteList" class="custom-list"></div>
+    <h4>导入新色卡</h4>
+    <div class="form-grid">
+      <label>名称<input type="text" id="cpName" placeholder="例如：我的 MARD 实拍校准" maxlength="100"></label>
+      <label>品牌<input type="text" id="cpBrand" value="自定义" maxlength="50"></label>
+      <label>豆子直径（mm）<input type="number" id="cpSize" value="2.6" min="1" max="20" step="0.1"></label>
+    </div>
+    <label class="block-label">颜色（每行一个：色号, 名称, #RRGGBB，名称可省略）
+      <textarea id="cpColors" rows="8" placeholder="A1, 奶白, #F9F0CD&#10;A2, #FBFBD4&#10;H7 黑色 #000000"></textarea>
+    </label>
+    <p class="hint" id="cpHint"></p>
+    <footer class="dialog-footer">
+      <button type="button" class="btn btn-primary" id="cpSubmit">导入</button>
+    </footer>
+  </form>
+</dialog>
+
+<div class="toast-stack" id="toasts" aria-live="polite"></div>
+
+<script src="js/api.js"></script>
+<script src="js/canvas.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
