@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import convert, palettes, patterns
+from app.api import bg_models, convert, palettes, patterns
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.errors import AppError
@@ -75,6 +75,7 @@ def health():
 app.include_router(palettes.router)
 app.include_router(convert.router)
 app.include_router(patterns.router)
+app.include_router(bg_models.router)
 
 # 前端静态文件放最后挂载，避免覆盖 /api 路由
 app.mount("/", StaticFiles(directory=settings.web_dir, html=True), name="web")

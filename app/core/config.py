@@ -42,6 +42,9 @@ class Settings:
     max_upload_mb: int = field(default_factory=lambda: int(_env("MAX_UPLOAD_MB", "15")))
     max_grid_size: int = field(default_factory=lambda: int(_env("MAX_GRID_SIZE", "200")))
 
+    # AI 抠图模型存放目录，默认与 rembg 共用 ~/.u2net（已下载过的模型可直接复用）
+    model_dir: Path = field(default_factory=lambda: Path(_env("MODEL_DIR", "~/.u2net")).expanduser())
+
     # 渲染图纸用的字体（需支持中文），留空则自动在系统字体中查找
     font_path: str = field(default_factory=lambda: _env("FONT_PATH", ""))
 

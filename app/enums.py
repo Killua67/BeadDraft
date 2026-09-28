@@ -33,3 +33,28 @@ class ExportFormat(StrEnum):
     PDF = "pdf"    # 打印用 PDF：首页总览 + 每块豆板一页（按实际豆子尺寸 1:1 输出）
     JSON = "json"  # 原始网格数据，便于二次开发
     CSV = "csv"    # 用量清单（色号、名称、颗数、含损耗建议购买量）
+
+
+class BackgroundMethod(StrEnum):
+    """去除背景的方式。"""
+
+    COLOR = "color"  # 颜色识别：从图片四周向内填充与背景相近的颜色，适合纯色 / 渐变背景的插画、截图
+    AI = "ai"        # AI 抠图：用分割模型识别主体，适合照片（人像、宠物、物品），需先下载模型
+
+
+class SegModel(StrEnum):
+    """AI 抠图模型（ONNX 格式，来自 rembg 项目公开发布的模型）。"""
+
+    ISNET_GENERAL = "isnet-general-use"  # 通用模型（约 170MB）：照片中的各类主体，推荐默认使用
+    U2NET_HUMAN = "u2net_human_seg"      # 人像模型（约 168MB）：专门针对人物
+    ISNET_ANIME = "isnet-anime"          # 动漫模型（约 168MB）：二次元 / 动漫角色
+    U2NETP = "u2netp"                    # 轻量模型（约 4.4MB）：速度快、体积小，边缘精度较差
+
+
+class ModelStatus(StrEnum):
+    """模型文件的下载状态。"""
+
+    NOT_DOWNLOADED = "not_downloaded"  # 未下载
+    DOWNLOADING = "downloading"        # 下载中
+    READY = "ready"                    # 已就绪，可以使用
+    FAILED = "failed"                  # 下载失败（可重试）

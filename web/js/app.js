@@ -12,7 +12,7 @@
   const DEFAULT_PARAMS = {
     palette_id: 'mard', width: 52, height: null, max_colors: 24,
     resample: 'box', dither: 'none', dither_strength: 0.6,
-    remove_background: false, bg_tolerance: 12, clean_isolated: true,
+    remove_background: false, bg_method: 'color', bg_model: 'isnet-general-use', bg_tolerance: 12, clean_isolated: true,
     outline: false, outline_code: null,
     saturation: 1, contrast: 1, brightness: 1, excluded_codes: [],
   };
@@ -37,6 +37,11 @@
     undo: [], redo: [], stroke: null,
     boardSize: 29,
     convertCtrl: null,         // 进行中的转换请求（新请求会取消旧请求）
+    models: new Map(),         // AI 抠图模型 ID -> 状态（见后端 SegModelStatus）
+  };
+  const BG_METHOD_HINTS = {
+    color: '适合纯色、渐变背景的插画和截图。照片或主体颜色接近背景时建议用 AI 抠图。',
+    ai: '适合照片（人像、宠物、物品）。首次使用需要下载模型，之后离线可用。',
   };
 
   // ============================================================ 画布
@@ -144,7 +149,12 @@
     $('#brightnessOut').textContent = Number($('#brightnessRange').value).toFixed(2);
     $('#bgTolOut').textContent = $('#bgTolRange').value;
     $('#ditherOut').textContent = Number($('#ditherRange').value).toFixed(2);
-    $('#bgTolField').hidden = !state.params.remove_background;
+    $('#bgOptions').hidden = !state.params.remove_background;
+    $('#bgTolField').hidden = state.params.bg_method !== 'color';
+    $('#bgModelField').hidden = state.params.bg_method !== 'ai';
+    $('#bgMethodHint').textContent = BG_METHOD_HINTS[state.params.bg_method];
+    $$('#bgMethodSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.method === state.params.bg_method));
+    updateModelStatus();
     $('#ditherStrengthField').hidden = state.params.dither === 'none';
     $('#outlineSelect').disabled = !state.params.outline;
   }
@@ -241,6 +251,7 @@
   let convertTimer = 0;
   function scheduleConvert(delay) {
     if (!state.file) return;
+    if (aiModelMissing()) return; // 模型下载完成后会自动重新生成
     clearTimeout(convertTimer);
     convertTimer = setTimeout(convert, delay);
   }
@@ -277,6 +288,98 @@
     $('#emptyState').hidden = true;
     updateZoomLabel();
     refreshResult();
+  }
+
+  // ============================================================ 去背景方式与 AI 模型
+
+  $('#bgMethodSwitch').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-method]');
+    if (!btn || btn.dataset.method === state.params.bg_method) return;
+    state.params.bg_method = btn.dataset.method;
+    updateOutputs();
+    if (aiModelMissing()) toast('AI 抠图需要先下载模型，点击「下载」即可');
+    scheduleConvert(0);
+  });
+
+  /** 当前选择了 AI 抠图、但模型还不可用 */
+  function aiModelMissing() {
+    const p = state.params;
+    return p.remove_background && p.bg_method === 'ai' && state.models.get(p.bg_model)?.status !== 'ready';
+  }
+
+  async function loadModels() {
+    try {
+      for (const m of await Api.listModels()) state.models.set(m.id, m);
+    } catch (err) {
+      toast(`加载 AI 模型列表失败：${err.message}`, 'error');
+      return;
+    }
+    renderModelOptions();
+    updateModelStatus();
+    for (const m of state.models.values()) if (m.status === 'downloading') pollModel(m.id);
+  }
+
+  function renderModelOptions() {
+    const select = $('#bgModelSelect');
+    select.innerHTML = [...state.models.values()].map((m) =>
+      `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}${m.status === 'ready' ? '（已下载）' : `（${formatSize(m.size_mb)}）`}</option>`).join('');
+    select.value = state.params.bg_model;
+  }
+
+  function updateModelStatus() {
+    const m = state.models.get(state.params.bg_model);
+    const box = $('#modelStatus');
+    const btn = $('#modelDownloadBtn');
+    if (!m) return;
+    box.dataset.status = m.status;
+    $('#modelDesc').textContent = m.description;
+    const size = formatSize(m.size_mb);
+    const text = {
+      ready: '✓ 已就绪',
+      not_downloaded: `未下载（约 ${size}）`,
+      downloading: `下载中 ${Math.round(m.progress * 100)}%（约 ${size}）`,
+      failed: `下载失败：${m.error || '未知错误'}`,
+    }[m.status];
+    $('#modelStatusText').textContent = text;
+    $('#modelStatusText').title = text;
+    btn.hidden = m.status === 'ready' || m.status === 'downloading';
+    btn.textContent = m.status === 'failed' ? '重试' : '下载';
+    $('#modelProgress').hidden = m.status !== 'downloading';
+    $('#modelProgressBar').style.width = `${Math.round(m.progress * 100)}%`;
+  }
+
+  $('#modelDownloadBtn').addEventListener('click', async () => {
+    const id = state.params.bg_model;
+    try {
+      state.models.set(id, await Api.downloadModel(id));
+      updateModelStatus();
+      pollModel(id);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+
+  /** 下载中每秒刷新一次进度，完成后自动重新生成 */
+  function pollModel(id) {
+    const timer = setInterval(async () => {
+      try {
+        const m = await Api.getModel(id);
+        state.models.set(id, m);
+        if (id === state.params.bg_model) updateModelStatus();
+        if (m.status === 'downloading') return;
+        clearInterval(timer);
+        renderModelOptions();
+        if (m.status === 'ready') {
+          toast(`模型「${m.name}」下载完成`);
+          scheduleConvert(0);
+        } else {
+          toast(`模型下载失败：${m.error}`, 'error');
+        }
+      } catch (err) {
+        clearInterval(timer);
+        toast(err.message, 'error');
+      }
+    }, 1000);
   }
 
   // ============================================================ 右侧：统计、用量清单
@@ -802,6 +905,8 @@
     return String(s).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   }
 
+  function formatSize(mb) { return `${mb.toFixed(mb < 10 ? 1 : 0)}MB`; }
+
   function clampInt(v, min, max) { return Math.min(max, Math.max(min, Math.round(Number(v) || min))); }
 
   function formatTime(iso) {
@@ -821,6 +926,7 @@
     } catch (err) {
       toast(`加载色卡失败：${err.message}`, 'error');
     }
+    loadModels();
     loadHistory();
   })();
 })();

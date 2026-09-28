@@ -9,7 +9,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import settings
-from app.enums import DitherMode, ExportFormat, PaletteSource, ResampleMode
+from app.enums import BackgroundMethod, DitherMode, ExportFormat, ModelStatus, PaletteSource, ResampleMode, SegModel
 
 # 网格类型：grid[行][列] = 色号，None 表示空位
 Grid = list[list[str | None]]
@@ -89,8 +89,12 @@ class ConvertParams(BaseModel):
     resample: ResampleMode = Field(ResampleMode.BOX, description="缩放方式：box 区域平均（照片）/ nearest 最近邻（像素画）")
     dither: DitherMode = Field(DitherMode.NONE, description="抖动方式：none 不抖动（推荐）/ floyd_steinberg 误差扩散")
     dither_strength: float = Field(0.6, ge=0, le=1, description="抖动强度 0~1，仅 floyd_steinberg 时生效")
-    remove_background: bool = Field(False, description="是否自动去除背景（从图片四周向内填充相近颜色）")
-    bg_tolerance: float = Field(12, ge=1, le=60, description="去背景的颜色容差（ΔE00），越大去得越多")
+    remove_background: bool = Field(False, description="是否去除背景")
+    bg_method: BackgroundMethod = Field(
+        BackgroundMethod.COLOR, description="去背景方式：color 颜色识别（纯色/渐变背景）/ ai AI 抠图（照片）",
+    )
+    bg_model: SegModel = Field(SegModel.ISNET_GENERAL, description="AI 抠图模型，仅 bg_method=ai 时生效")
+    bg_tolerance: float = Field(12, ge=1, le=60, description="颜色识别的容差（ΔE00），越大去得越多，仅 bg_method=color 时生效")
     clean_isolated: bool = Field(True, description="是否清理孤立杂点（周围 8 格都不同色的单颗豆）")
     outline: bool = Field(False, description="是否给主体外围加一圈描边（需要图片有透明/背景区域）")
     outline_code: str | None = Field(None, description="描边色号，不填则自动选色卡中最深的颜色")
@@ -183,6 +187,20 @@ class PatternListResponse(BaseModel):
 
     total: int = Field(..., description="总数")
     items: list[PatternSummary] = Field(..., description="当前页数据")
+
+
+# ---------------------------------------------------------------- AI 抠图模型
+
+class SegModelStatus(BaseModel):
+    """AI 抠图模型及其下载状态。"""
+
+    id: SegModel = Field(..., description="模型 ID")
+    name: str = Field(..., description="显示名称")
+    description: str = Field(..., description="适用场景")
+    size_mb: float = Field(..., description="模型文件大小（MB）")
+    status: ModelStatus = Field(..., description="状态：not_downloaded 未下载 / downloading 下载中 / ready 可用 / failed 下载失败")
+    progress: float = Field(..., description="下载进度 0~1")
+    error: str | None = Field(None, description="下载失败原因")
 
 
 # ---------------------------------------------------------------- 导出

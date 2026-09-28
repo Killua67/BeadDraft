@@ -56,6 +56,10 @@ const Api = (() => {
       return json('/api/convert', { method: 'POST', body: form, signal });
     },
 
+    listModels: () => json('/api/bg-models'),
+    getModel: (id) => json(`/api/bg-models/${encodeURIComponent(id)}`),
+    downloadModel: (id) => json(`/api/bg-models/${encodeURIComponent(id)}/download`, { method: 'POST' }),
+
     listPatterns: (limit = 50) => json(`/api/patterns?limit=${limit}`),
     getPattern: (id) => json(`/api/patterns/${id}`),
     createPattern: (payload) => json('/api/patterns', jsonBody('POST', payload)),

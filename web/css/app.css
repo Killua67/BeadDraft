@@ -267,3 +267,14 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
   .topbar { padding: 0 16px; }
 }
 .save-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 26px; }
+
+/* ---------- 去背景方式 / AI 模型 ---------- */
+.segmented-sm { width: 100%; }
+.segmented-sm button { flex: 1; padding: 4px 8px; font-size: 13px; }
+#bgOptions .hint { margin: 6px 0 10px; }
+.model-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 12px; min-height: 28px; }
+.model-status[data-status="ready"] #modelStatusText { color: #2E7D32; }
+.model-status[data-status="failed"] #modelStatusText { color: #B3261E; }
+.model-status #modelStatusText { color: var(--muted); }
+.progress { height: 6px; border-radius: 3px; background: #EFEDE8; overflow: hidden; margin-top: 4px; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }

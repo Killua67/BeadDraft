@@ -2,9 +2,10 @@
 核心算法：图片 -> 拼豆网格。
 
 处理流程（convert_image）：
-  1. 读取图片（按 EXIF 自动旋转），调整饱和度 / 对比度 / 亮度
-  2. 缩放到目标网格尺寸，每格对应一颗豆
-  3. 生成「哪些格子放豆」的掩码：透明像素不放豆；可选从四周向内去除背景
+  1. 读取图片（按 EXIF 自动旋转），缩小为「工作图」（每格约 4 像素）
+  2. 可选去背景：颜色识别或 AI 抠图，得到工作图上的前景蒙版（见 background.py / segmentation.py）
+  3. 调整饱和度 / 对比度 / 亮度，按前景覆盖率缩放到网格：覆盖 ≥50% 的格子放豆，
+     格子颜色只取主体像素（排除半透明边缘），避免主体外圈混入背景色
   4. 颜色量化：Lab + CIEDE2000 找色卡中的最近色，再贪心合并到不超过 max_colors 种
   5. 可选 Floyd–Steinberg 抖动
   6. 可选清理孤立杂点、给主体加描边
@@ -13,20 +14,22 @@
 算法内部用「色卡下标」的二维数组表示网格（-1 为空位），最后再转换成色号。
 """
 
+import hashlib
 import io
 import time
-from collections import Counter, deque
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
-from PIL import Image, ImageEnhance, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageEnhance, ImageOps, UnidentifiedImageError
 
 from app.core.config import settings
 from app.core.errors import BadRequestError
 from app.core.logger import get_logger
-from app.enums import DitherMode, ResampleMode
+from app.enums import BackgroundMethod, DitherMode, ResampleMode
 from app.schemas import ConvertParams
-from app.services.color import delta_e_2000, delta_e_matrix, srgb_to_lab
+from app.services import background, segmentation
+from app.services.color import delta_e_matrix, srgb_to_lab
 from app.services.grid_utils import build_bom
 from app.services.palette_service import Palette
 
@@ -35,6 +38,7 @@ logger = get_logger(__name__)
 EMPTY = -1              # 网格中空位（不放豆）的标记
 ALPHA_THRESHOLD = 128   # 缩放后 alpha 低于该值视为透明
 PRE_SHRINK_SIZE = 2048  # 超大图片先缩小到该边长，加快处理速度
+WORK_SCALE = 4          # 工作图每格对应的像素数（去背景、边缘处理在工作图上进行）
 
 
 @dataclass
@@ -57,16 +61,13 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
     t0 = time.perf_counter()
     warnings: list[str] = []
 
-    img = _load_image(data, params)
-    width, height = _target_size(img, params, warnings)
-    rgb, mask = _resize_to_grid(img, width, height, params.resample)
-    lab = srgb_to_lab(rgb)
-
+    base = _load_image(data, params)
+    width, height = _target_size(base, params, warnings)
+    work = _work_image(base, width, height, params.resample)
     if params.remove_background:
-        removed = _remove_background(lab, mask, params.bg_tolerance)
-        logger.debug("去背景：移除 %d 格", removed)
-        if removed == 0:
-            warnings.append("没有检测到可去除的背景（图片四周颜色不统一），可尝试调大容差")
+        work.putalpha(_background_mask(data, base, work, params, warnings))
+    rgb, mask = _resize_to_grid(_enhance(work, params), width, height, params.resample)
+    lab = srgb_to_lab(rgb)
 
     candidates = _candidate_indices(palette, params.excluded_codes)
 
@@ -83,6 +84,12 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
         if params.clean_isolated:
             idx, changed = _clean_isolated(idx)
             logger.debug("清理孤立杂点：%d 格", changed)
+
+        if params.remove_background:
+            # 去背景后残留的小碎块（背景里的噪点），阈值随主体大小变化，最多 20 格
+            total = int((idx != EMPTY).sum())
+            removed = background.remove_small_islands(idx, EMPTY, min(20, max(3, int(total * 0.003))))
+            logger.debug("去除小碎块：%d 格", removed)
 
         if params.outline:
             if (idx == EMPTY).any():
@@ -111,7 +118,7 @@ def convert_image(data: bytes, params: ConvertParams, palette: Palette) -> Conve
 # ---------------------------------------------------------------- 1~3 图片预处理
 
 def _load_image(data: bytes, params: ConvertParams) -> Image.Image:
-    """读取图片并做色彩调整，返回 RGBA 图像。"""
+    """读取图片，返回 RGBA 图像（超大图片先缩小）。"""
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
@@ -124,15 +131,6 @@ def _load_image(data: bytes, params: ConvertParams) -> Image.Image:
     if max(img.size) > PRE_SHRINK_SIZE:
         method = Image.Resampling.NEAREST if params.resample == ResampleMode.NEAREST else Image.Resampling.LANCZOS
         img.thumbnail((PRE_SHRINK_SIZE, PRE_SHRINK_SIZE), method)
-
-    if (params.saturation, params.contrast, params.brightness) != (1.0, 1.0, 1.0):
-        alpha = img.getchannel("A")
-        rgb = img.convert("RGB")
-        rgb = ImageEnhance.Color(rgb).enhance(params.saturation)
-        rgb = ImageEnhance.Contrast(rgb).enhance(params.contrast)
-        rgb = ImageEnhance.Brightness(rgb).enhance(params.brightness)
-        rgb.putalpha(alpha)
-        img = rgb
     return img
 
 
@@ -148,44 +146,77 @@ def _target_size(img: Image.Image, params: ConvertParams, warnings: list[str]) -
     return width, height
 
 
+def _work_image(base: Image.Image, width: int, height: int, resample: ResampleMode) -> Image.Image:
+    """
+    工作图：缩小到每格约 WORK_SCALE 像素。去背景、边缘处理都在这张图上做，
+    既保留了足够的边缘细节，又比原图快得多。像素画（最近邻）模式保持原图不缩放。
+    """
+    size = (width * WORK_SCALE, height * WORK_SCALE)
+    if resample == ResampleMode.NEAREST or base.width <= size[0]:
+        return base.copy()
+    return base.resize(size, Image.Resampling.BOX)
+
+
+def _background_mask(data: bytes, base: Image.Image, work: Image.Image, params: ConvertParams,
+                     warnings: list[str]) -> Image.Image:
+    """计算工作图的前景蒙版（L，255 = 主体），并与图片原有的透明度合并。"""
+    t0 = time.perf_counter()
+    if params.bg_method == BackgroundMethod.AI:
+        # AI 在原图上推理（结果按图片内容缓存），再缩放到工作图尺寸
+        mask = segmentation.predict_mask(base, params.bg_model, hashlib.sha1(data).hexdigest())
+        mask = mask.resize(work.size, Image.Resampling.BILINEAR)
+    else:
+        mask = background.color_mask(work, params.bg_tolerance)
+    mask = ImageChops.darker(mask, work.getchannel("A"))
+
+    opaque = np.asarray(work.getchannel("A")) >= 128
+    fg_ratio = (np.asarray(mask) >= 128).sum() / max(1, opaque.sum())
+    logger.debug("去背景（%s）：主体占比 %.0f%%，耗时 %dms",
+                 params.bg_method, fg_ratio * 100, (time.perf_counter() - t0) * 1000)
+    if fg_ratio > 0.98:
+        warnings.append("没有检测到明显的背景" + (
+            "（图片四周颜色不统一），可调大容差或改用 AI 抠图" if params.bg_method == BackgroundMethod.COLOR else ""))
+    elif fg_ratio < 0.01:
+        warnings.append("几乎整张图都被当成了背景" + (
+            "，可调小容差" if params.bg_method == BackgroundMethod.COLOR else "，可换一个 AI 模型试试"))
+    return mask
+
+
+def _enhance(img: Image.Image, params: ConvertParams) -> Image.Image:
+    """调整饱和度 / 对比度 / 亮度（保留透明度）。"""
+    if (params.saturation, params.contrast, params.brightness) == (1.0, 1.0, 1.0):
+        return img
+    alpha = img.getchannel("A")
+    rgb = img.convert("RGB")
+    rgb = ImageEnhance.Color(rgb).enhance(params.saturation)
+    rgb = ImageEnhance.Contrast(rgb).enhance(params.contrast)
+    rgb = ImageEnhance.Brightness(rgb).enhance(params.brightness)
+    rgb.putalpha(alpha)
+    return rgb
+
+
 def _resize_to_grid(img: Image.Image, width: int, height: int, resample: ResampleMode):
     """
     缩放到网格尺寸，返回 (rgb, mask)：
-    rgb 为 (H, W, 3) uint8；mask 为 (H, W) bool，True 表示该格放豆。
-    Pillow 缩放 RGBA 时会自动做预乘 alpha，半透明边缘不会混出黑边。
+    rgb 为 (H, W, 3) uint8；mask 为 (H, W) bool，True 表示该格放豆（主体覆盖率 ≥ 50%）。
+
+    Pillow 缩放 RGBA 时做预乘 alpha，格子颜色 = 格内主体像素的平均色，不会混入背景。
+    图片有透明区域时，再用「主体内芯」（去掉半透明边缘）重新计算颜色，避免外圈发白 / 发灰。
     """
-    method = Image.Resampling.NEAREST if resample == ResampleMode.NEAREST else Image.Resampling.BOX
-    small = np.asarray(img.resize((width, height), method))
-    return small[..., :3].copy(), small[..., 3] >= ALPHA_THRESHOLD
+    if resample == ResampleMode.NEAREST:
+        small = np.asarray(img.resize((width, height), Image.Resampling.NEAREST))
+        return small[..., :3].copy(), small[..., 3] >= ALPHA_THRESHOLD
 
-
-def _remove_background(lab: np.ndarray, mask: np.ndarray, tolerance: float) -> int:
-    """
-    去背景：取图片四周一圈格子的中位色作为背景色，从边缘开始做 4 邻域洪水填充，
-    与背景色 ΔE00 小于容差的连通格子视为背景。直接修改 mask，返回移除的格子数。
-    """
-    h, w = mask.shape
-    border = np.zeros_like(mask)
-    border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
-    border &= mask
-    if not border.any():
-        return 0
-
-    bg_lab = np.median(lab[border], axis=0)
-    similar = (delta_e_2000(lab, bg_lab) < tolerance) & mask
-
-    visited = np.zeros_like(mask)
-    queue = deque(zip(*np.nonzero(border & similar)))
-    for y, x in queue:
-        visited[y, x] = True
-    while queue:
-        y, x = queue.popleft()
-        for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
-            if 0 <= ny < h and 0 <= nx < w and similar[ny, nx] and not visited[ny, nx]:
-                visited[ny, nx] = True
-                queue.append((ny, nx))
-    mask &= ~visited
-    return int(visited.sum())
+    small = np.asarray(img.resize((width, height), Image.Resampling.BOX))
+    rgb, mask = small[..., :3].copy(), small[..., 3] >= ALPHA_THRESHOLD
+    alpha = img.getchannel("A")
+    if alpha.getextrema()[0] < 255:
+        core = img.copy()
+        core.putalpha(background.core_alpha(alpha))
+        core_small = np.asarray(core.resize((width, height), Image.Resampling.BOX))
+        use = core_small[..., 3] >= 32  # 内芯至少占格子的 1/8，太少时 8 位反预乘误差大，仍用原色
+        rgb[use] = core_small[use, :3]
+    return rgb, mask
 
 
 # ---------------------------------------------------------------- 4~5 颜色量化

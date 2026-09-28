@@ -7,18 +7,18 @@
 
 **拼豆图纸生成器**：把任意图片转换为拼豆（Perler / Hama / Artkal / MARD 等）图纸。
 
-- 后端：Python 3.12 + FastAPI + SQLAlchemy 2.0（SQLite）+ Pillow + numpy + reportlab
+- 后端：Python 3.12 + FastAPI + SQLAlchemy 2.0（SQLite）+ Pillow + numpy + reportlab + onnxruntime（AI 抠图）
 - 前端：原生 HTML / CSS / JavaScript（无构建步骤），由 FastAPI 以静态文件方式提供
 - 环境管理：uv（虚拟环境在项目内 `.venv/`）
 
-核心流程：上传图片 → 缩放到网格 → Lab + CIEDE2000 映射到品牌色卡 → 合并颜色 → 清理杂点/描边 → 输出色号网格、用量清单、分板打印 PDF。
+核心流程：上传图片 → （可选）去背景：颜色识别 / AI 抠图 → 按主体覆盖率缩放到网格 → Lab + CIEDE2000 映射到品牌色卡 → 合并颜色 → 清理杂点/碎块/描边 → 输出色号网格、用量清单、分板打印 PDF。
 
 ## 目录结构
 
 ```
 app/
   main.py                 FastAPI 入口：异常处理、路由注册、静态文件挂载
-  enums.py                枚举（缩放方式、抖动方式、色卡来源、导出格式）
+  enums.py                枚举（缩放方式、抖动方式、色卡来源、导出格式、去背景方式、AI 模型、模型状态）
   models.py               ORM 模型（patterns 图纸表、custom_palettes 自定义色卡表）
   schemas.py              Pydantic 请求/响应模型
   core/
@@ -30,9 +30,12 @@ app/
     convert.py            POST /api/convert、POST /api/export
     palettes.py           /api/palettes 色卡增删查
     patterns.py           /api/patterns 图纸增删改查、缩略图、导出
+    bg_models.py          /api/bg-models AI 抠图模型状态与后台下载
   services/
     color.py              sRGB→Lab、CIEDE2000 色差（已用 Sharma 标准数据验证）
     converter.py          ★ 核心算法：图片 → 拼豆网格
+    background.py         颜色识别去背景、主体内芯、小碎块清理
+    segmentation.py       AI 抠图：模型登记、后台下载（MD5 校验）、ONNX 推理、蒙版缓存
     palette_service.py    色卡加载（内置 JSON + 数据库自定义）
     renderer.py           图纸渲染（PNG / PDF / 缩略图）
     export_service.py     导出格式分发
@@ -47,12 +50,13 @@ web/
   js/app.js               页面逻辑（参数、编辑、保存、导出、历史）
 scripts/
   import_palettes.py      从上游开源数据重新生成内置色卡
+  download_model.py       预先下载 AI 抠图模型（部署时用）
   start.sh / start.bat    一键启动脚本
 tests/                    pytest 测试
 run.py                    启动入口（统一日志格式）
 ```
 
-运行时数据（不提交 Git）：`data/perler.db`（SQLite）、`logs/app.log`。
+运行时数据（不提交 Git）：`data/perler.db`（SQLite）、`logs/app.log`、AI 模型 `~/.u2net/*.onnx`（项目目录之外）。
 
 ## 环境与启动
 
@@ -91,6 +95,13 @@ uv run pytest                # 运行测试
 | `PB_MAX_UPLOAD_MB` | `15` | 上传图片大小上限 |
 | `PB_MAX_GRID_SIZE` | `200` | 网格边长上限 |
 | `PB_FONT_PATH` | 自动查找 | 渲染图纸用的中文字体路径 |
+| `PB_MODEL_DIR` | `~/.u2net` | AI 抠图模型目录（与 rembg 共用） |
+
+### AI 抠图模型
+
+- 模型不随代码提交，首次使用时在页面点「下载」，或执行 `uv run python scripts/download_model.py [模型ID]`（`--list` 查看状态）。
+- 可选模型：`isnet-general-use` 通用（170MB，默认）、`u2net_human_seg` 人像（168MB）、`isnet-anime` 动漫（168MB）、`u2netp` 轻量（4.4MB）。
+- 本机已下载：`isnet-general-use`（2026-09-28）。
 
 ## 编码约定
 
@@ -109,6 +120,8 @@ uv run pytest -k api     # 只跑接口测试
 
 - 测试使用临时目录中的数据库与日志（见 `tests/conftest.py`），不会影响 `data/`、`logs/`。
 - 修改 `services/color.py` 或 `services/converter.py` 后必须运行测试；色差公式测试使用 Sharma 2005 论文标准数据。
+- 测试把 `PB_MODEL_DIR` 指向空的临时目录，AI 抠图用假模型（monkeypatch `_run_model`）验证流程，**测试不会下载模型**。
+- 调整去背景算法时，除单元测试外建议用真实照片目测对比（纯色背景、渐变背景、主体贴边、复杂背景各一张）。
 - 新增接口或算法参数时，同步在 `tests/test_api.py` 中补充用例。
 
 ## 安全注意事项

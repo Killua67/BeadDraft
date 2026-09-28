@@ -87,9 +87,26 @@
       <div class="field field-check">
         <label><input type="checkbox" data-param="remove_background"> 去除背景</label>
       </div>
-      <div class="field sub-field" id="bgTolField">
-        <label for="bgTolRange">背景容差 <output id="bgTolOut">12</output></label>
-        <input type="range" id="bgTolRange" min="2" max="40" value="12" data-param="bg_tolerance">
+      <div class="field sub-field" id="bgOptions">
+        <div class="segmented segmented-sm" id="bgMethodSwitch" role="tablist" aria-label="去背景方式">
+          <button type="button" data-method="color">颜色识别</button>
+          <button type="button" data-method="ai">AI 抠图</button>
+        </div>
+        <p class="hint" id="bgMethodHint"></p>
+        <div class="field" id="bgTolField">
+          <label for="bgTolRange">背景容差 <output id="bgTolOut">12</output></label>
+          <input type="range" id="bgTolRange" min="2" max="40" value="12" data-param="bg_tolerance">
+        </div>
+        <div class="field" id="bgModelField">
+          <label for="bgModelSelect">模型</label>
+          <select id="bgModelSelect" data-param="bg_model"></select>
+          <p class="hint" id="modelDesc"></p>
+          <div class="model-status" id="modelStatus">
+            <span id="modelStatusText"></span>
+            <button class="btn btn-sm" id="modelDownloadBtn" type="button">下载</button>
+          </div>
+          <div class="progress" id="modelProgress" hidden><i id="modelProgressBar"></i></div>
+        </div>
       </div>
       <div class="field field-check">
         <label><input type="checkbox" data-param="outline"> 主体描边</label>
