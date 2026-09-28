@@ -118,6 +118,8 @@ uv run pytest                # 运行测试
 - 分层：`api/` 只做参数解析和调用，业务逻辑放 `services/`；service 层抛 `app.core.errors` 中的异常，不直接抛 HTTPException。
 - CPU 密集型接口（图片处理、导出）用同步 `def` 定义，FastAPI 会放入线程池执行。
 - 前端：原生 JS，不引入构建工具和外部 CDN（保证离线可用）；所有插入 HTML 的用户数据必须经过 `escapeHtml`。
+- 图标：使用 `web/index.html` 顶部的 SVG 雪碧图（`<symbol id="i-xxx">`，24×24 线条图标），按钮里用
+  `<svg class="icon"><use href="#i-xxx"/></svg>` 引用，颜色跟随 `currentColor`；不要用 emoji 做图标（各系统显示不一致）。
 - 接口错误响应统一为 `{"detail": "中文错误信息"}`。
 
 ## 测试

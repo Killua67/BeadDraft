@@ -130,7 +130,12 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
   background: transparent; cursor: pointer; font-size: 15px; line-height: 1;
 }
 .tool:hover:not(:disabled) { background: #F1EFEB; }
-.tool.active { background: var(--accent-soft); border-color: #F7B9BC; }
+.tool.active { background: var(--accent-soft); border-color: #F7B9BC; color: var(--accent); }
+.tool { display: inline-flex; align-items: center; justify-content: center; color: #4A463F; }
+.icon {
+  width: 18px; height: 18px; flex: none;
+  fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
 .tool:disabled { opacity: .35; cursor: default; }
 .paint-chip {
   width: 22px; height: 22px; border-radius: 50%; margin-left: 4px;
